@@ -1,6 +1,7 @@
 // server.js - Express API for chat agent with SSE streaming
 
 import "dotenv/config";
+import { readFileSync } from "node:fs";
 import express from "express";
 import cors from "cors";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -10,8 +11,10 @@ import { streamText } from "ai";
 import { tools } from "./tools/index.js";
 import { createWebSearch } from "./tools/webSearch.js";
 
-const SYSTEM_PROMPT =
-  "You are a helpful personal assistant. Please make all responses in English.";
+const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8")
+  .replace("{{DATE}}", new Date().toLocaleDateString("en-US", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  }));
 
 const provider = createOpenAICompatible({
   name: "lmstudio",
