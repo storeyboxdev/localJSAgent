@@ -1,0 +1,22 @@
+{
+  "name": "lmstudio",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "dateTime.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@ai-sdk/mcp": "^1.0.19",
+    "@ai-sdk/openai-compatible": "^2.0.28",
+    "@lmstudio/sdk": "^1.5.0",
+    "ai": "^6.0.77",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "openai": "^6.18.0"
+  }
+}
