@@ -8,6 +8,10 @@
   "main": "dateTime.js",
   "scripts": {
     "start": "concurrently --names \"API,UI\" --prefix-colors \"cyan,magenta\" \"node server.js\" \"npm run dev --prefix client\"",
+    "docling:start": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml up docling-serve -d",
+    "docling:restart": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml restart docling-serve",
+    "docling:stop": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml stop docling-serve",
+    "docling:logs": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml logs -f docling-serve",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
