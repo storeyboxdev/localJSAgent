@@ -292,3 +292,6 @@ export const deleteEvent = tool({
     return { success: true, message: `Event ${eventId} deleted.` };
   },
 });
+
+// Export internals for calendar monitor reuse (avoids re-auth)
+export { calendar, activeCalendar, TIMEZONE };

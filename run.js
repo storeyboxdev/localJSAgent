@@ -3,7 +3,6 @@
 import "dotenv/config";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { LMStudioClient } from "@lmstudio/sdk";
 import { streamText } from "ai";
 import { createInterface } from "readline/promises";
 import { tools } from "./tools/index.js";
@@ -62,11 +61,15 @@ function processBuffer(buffer, insideTag, emit) {
 }
 
 async function main() {
-  const client = new LMStudioClient();
-  const lmmodel = await client.llm.model();
-  const modelInfo = await lmmodel.getModelInfo();
-  const model = provider(modelInfo.path);
-  console.log(`Model: ${modelInfo.path}`);
+  const apiBase = process.env.LMSTUDIO_BASE_URL.replace(/\/v1\/?$/, "");
+  const modelsRes = await fetch(`${apiBase}/api/v0/models`);
+  const modelsData = await modelsRes.json();
+  const loadedLlm = modelsData.data.find(
+    (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm")
+  );
+  if (!loadedLlm) throw new Error("No loaded LLM found in LM Studio. Load a model first.");
+  const model = provider(loadedLlm.id);
+  console.log(`Model: ${loadedLlm.id}`);
 
   console.log("Connecting to Tavily MCP server...");
   const mcpClient = await createMCPClient({

@@ -6,6 +6,7 @@ export { listFiles } from "./listFiles.js";
 export { changeDirectory } from "./changeDirectory.js";
 export { currentDirectory } from "./currentDirectory.js";
 export { listCalendars, setActiveCalendar, listEvents, addEvent, editEvent, deleteEvent } from "./gcalendar.js";
+export { calendar, activeCalendar, TIMEZONE } from "./gcalendar.js";
 
 import { dateTime } from "./dateTime.js";
 import { readFile } from "./readFile.js";

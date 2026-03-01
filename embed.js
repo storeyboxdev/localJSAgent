@@ -1,146 +1,17 @@
-// embed.js - Standalone vector embedding & search CLI using LM Studio
+// embed.js - Document indexing CLI for the personal knowledge base (Supabase-backed)
 
 import "dotenv/config";
-import { LMStudioClient } from "@lmstudio/sdk";
-import { readFile, writeFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve, extname, relative } from "node:path";
+import { supabaseAdmin } from "./lib/supabase.js";
+import { chunkText } from "./lib/chunking.js";
+import { generateEmbeddings } from "./lib/embeddings.js";
+import { searchDocuments, PERSONAL_USER_ID } from "./lib/retrieval.js";
 
-// --- Configuration ---
-
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL;
-const VECTOR_STORE_PATH = resolve("vectors.json");
 const DEFAULT_EXTENSIONS = new Set([
   ".js", ".ts", ".jsx", ".tsx", ".json", ".txt", ".md", ".css", ".html",
 ]);
-const CHUNK_SIZE = 1000;   // characters per chunk
-const CHUNK_OVERLAP = 200; // overlap between consecutive chunks
-const TOP_K = 5;
-const BATCH_SIZE = 10;     // chunks per embedding API call
-
-// Lazy-connect to LM Studio embedding model (only when needed for index/search)
-let embModel;
-async function getEmbeddingModel() {
-  if (!embModel) {
-    const lms = new LMStudioClient();
-    embModel = await lms.embedding.model(EMBEDDING_MODEL);
-    const info = await embModel.getModelInfo();
-    console.log(`Embedding model: ${info.path}`);
-  }
-  return embModel;
-}
-
-// --- Chunking ---
-
-function chunkText(text, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
-  if (text.length <= chunkSize) return [text];
-
-  const lines = text.split("\n");
-  const chunks = [];
-  let currentChunk = "";
-  let chunkStartLine = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] + "\n";
-
-    if (currentChunk.length + line.length > chunkSize && currentChunk.length > 0) {
-      chunks.push(currentChunk.trimEnd());
-
-      // Walk backward to build overlap
-      let overlapText = "";
-      for (let j = i - 1; j >= chunkStartLine; j--) {
-        const candidate = lines[j] + "\n" + overlapText;
-        if (candidate.length > overlap) break;
-        overlapText = candidate;
-      }
-      currentChunk = overlapText;
-      chunkStartLine = i;
-    }
-
-    currentChunk += line;
-  }
-
-  if (currentChunk.trim().length > 0) {
-    chunks.push(currentChunk.trimEnd());
-  }
-
-  return chunks;
-}
-
-// --- Embedding ---
-
-async function embedTexts(texts) {
-  const model = await getEmbeddingModel();
-  const results = [];
-  for (const text of texts) {
-    const result = await model.embed(text);
-    results.push(Array.from(result.embedding));
-  }
-  return results;
-}
-
-// --- Vector Store I/O ---
-
-function createEmptyStore() {
-  return {
-    version: 1,
-    model: EMBEDDING_MODEL,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    entries: [],
-  };
-}
-
-async function loadStore() {
-  try {
-    const data = await readFile(VECTOR_STORE_PATH, "utf-8");
-    return JSON.parse(data);
-  } catch (err) {
-    if (err.code === "ENOENT") return createEmptyStore();
-    throw err;
-  }
-}
-
-async function saveStore(store) {
-  store.updatedAt = new Date().toISOString();
-  await writeFile(VECTOR_STORE_PATH, JSON.stringify(store, null, 2));
-}
-
-// --- Similarity ---
-
-function cosineSimilarity(a, b) {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
-
-// --- Search ---
-
-async function search(query, { topK = TOP_K, type } = {}) {
-  const store = await loadStore();
-  if (store.entries.length === 0) return [];
-
-  const [queryEmbedding] = await embedTexts([query]);
-
-  let candidates = store.entries;
-  if (type) {
-    candidates = candidates.filter((e) => e.metadata.type === type);
-  }
-
-  const scored = candidates.map((entry) => ({
-    id: entry.id,
-    text: entry.text,
-    score: cosineSimilarity(queryEmbedding, entry.embedding),
-    metadata: entry.metadata,
-  }));
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
-}
+const BATCH_SIZE = 10;
 
 // --- File Walking ---
 
@@ -150,12 +21,8 @@ async function walkDirectory(dirPath, extensions = DEFAULT_EXTENSIONS) {
 
   for (const entry of entries) {
     const fullPath = resolve(dirPath, entry.name);
-
     if (entry.isDirectory()) {
-      if (
-        entry.name === "node_modules" || entry.name === ".git" ||
-        entry.name === "dist" || entry.name.startsWith(".")
-      ) {
+      if (["node_modules", ".git", "dist", "build"].includes(entry.name) || entry.name.startsWith(".")) {
         continue;
       }
       const sub = await walkDirectory(fullPath, extensions);
@@ -176,67 +43,103 @@ async function indexDirectory(dirPath) {
 
   if (files.length === 0) {
     console.log(`No indexable files found in: ${absoluteDir}`);
-    return { filesIndexed: 0, chunksCreated: 0 };
+    return;
   }
 
   console.log(`Found ${files.length} files to index...`);
-  const store = await loadStore();
 
-  // Remove existing entries from this directory (supports re-indexing)
+  // Remove existing documents for this directory prefix (re-indexing support)
   const dirPrefix = relative(process.cwd(), absoluteDir).replace(/\\/g, "/");
-  store.entries = store.entries.filter(
-    (e) => !e.metadata.source.startsWith(dirPrefix)
-  );
+  const { error: deleteError } = await supabaseAdmin
+    .from("documents")
+    .delete()
+    .eq("user_id", PERSONAL_USER_ID)
+    .like("filename", `${dirPrefix}/%`);
+
+  if (deleteError) {
+    console.error("Warning: failed to clean up existing documents:", deleteError.message);
+  }
 
   let totalChunks = 0;
-  let pendingChunks = [];
+  let filesIndexed = 0;
 
   for (const filePath of files) {
     const relPath = relative(process.cwd(), filePath).replace(/\\/g, "/");
-    console.log(`  Reading: ${relPath}`);
+    console.log(`  Indexing: ${relPath}`);
 
-    const content = await readFile(filePath, "utf-8");
+    let content;
+    try {
+      content = await readFile(filePath, "utf-8");
+    } catch (err) {
+      console.warn(`  Skipping ${relPath}: ${err.message}`);
+      continue;
+    }
     if (!content.trim()) continue;
 
+    const fileStat = await stat(filePath);
+    const ext = extname(filePath).toLowerCase();
+    const docId = crypto.randomUUID();
+
+    const { error: docError } = await supabaseAdmin.from("documents").insert({
+      id: docId,
+      user_id: PERSONAL_USER_ID,
+      filename: relPath,
+      file_type: ext || "text/plain",
+      file_size: fileStat.size,
+      storage_path: filePath,
+      status: "processing",
+      chunk_count: 0,
+    });
+
+    if (docError) {
+      console.error(`  Failed to create document record for ${relPath}:`, docError.message);
+      continue;
+    }
+
     const chunks = chunkText(content);
-
-    for (let i = 0; i < chunks.length; i++) {
-      pendingChunks.push({
-        text: chunks[i],
-        id: `file::${relPath}::${i}`,
-        metadata: {
-          source: relPath,
-          chunkIndex: i,
-          type: "file",
-          indexedAt: new Date().toISOString(),
-        },
-      });
+    if (chunks.length === 0) {
+      await supabaseAdmin.from("documents").update({ status: "completed" }).eq("id", docId);
+      continue;
     }
 
-    // Flush batch when it reaches BATCH_SIZE
-    while (pendingChunks.length >= BATCH_SIZE) {
-      const batch = pendingChunks.splice(0, BATCH_SIZE);
-      const embeddings = await embedTexts(batch.map((c) => c.text));
-      for (let j = 0; j < batch.length; j++) {
-        store.entries.push({ ...batch[j], embedding: embeddings[j] });
+    try {
+      const allEmbeddings = [];
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const batch = chunks.slice(i, i + BATCH_SIZE);
+        const embeddings = await generateEmbeddings(batch.map((c) => c.content));
+        allEmbeddings.push(...embeddings);
+        process.stdout.write(`    Embedded ${allEmbeddings.length}/${chunks.length} chunks...\r`);
       }
-      totalChunks += batch.length;
-      process.stdout.write(`  Embedded ${totalChunks} chunks...\r`);
+      process.stdout.write("\n");
+
+      const chunkRows = chunks.map((chunk, i) => ({
+        document_id: docId,
+        user_id: PERSONAL_USER_ID,
+        content: chunk.content,
+        chunk_index: chunk.chunkIndex,
+        embedding: JSON.stringify(allEmbeddings[i]),
+      }));
+
+      const { error: chunkError } = await supabaseAdmin.from("document_chunks").insert(chunkRows);
+      if (chunkError) throw new Error(`Chunk insert failed: ${chunkError.message}`);
+
+      await supabaseAdmin
+        .from("documents")
+        .update({ status: "completed", chunk_count: chunks.length })
+        .eq("id", docId);
+
+      totalChunks += chunks.length;
+      filesIndexed++;
+    } catch (err) {
+      console.error(`  Error indexing ${relPath}:`, err.message);
+      await supabaseAdmin
+        .from("documents")
+        .update({ status: "error", error_message: err.message })
+        .eq("id", docId);
     }
   }
 
-  // Flush remaining
-  if (pendingChunks.length > 0) {
-    const embeddings = await embedTexts(pendingChunks.map((c) => c.text));
-    for (let j = 0; j < pendingChunks.length; j++) {
-      store.entries.push({ ...pendingChunks[j], embedding: embeddings[j] });
-    }
-    totalChunks += pendingChunks.length;
-  }
-
-  await saveStore(store);
-  console.log(`\nIndexed ${files.length} files, ${totalChunks} chunks total.`);
-  return { filesIndexed: files.length, chunksCreated: totalChunks };
+  console.log(`\nDone: ${filesIndexed}/${files.length} files indexed, ${totalChunks} total chunks.`);
 }
 
 // --- CLI ---
@@ -261,17 +164,16 @@ async function main() {
         console.error("Usage: node embed.js search <query>");
         process.exit(1);
       }
-      const results = await search(query);
+      const results = await searchDocuments(query, { limit: 5 });
       if (results.length === 0) {
         console.log("No results found. Have you indexed any files?");
       } else {
         console.log(`\nTop ${results.length} results for: "${query}"\n`);
         for (const r of results) {
-          console.log(
-            `--- ${r.metadata.source} [chunk ${r.metadata.chunkIndex}] ` +
-            `(score: ${r.score.toFixed(4)}) ---`
-          );
-          const preview = r.text.length > 300 ? r.text.slice(0, 300) + "..." : r.text;
+          const filename = r.document?.filename ?? r.metadata?.source ?? "unknown";
+          const score = (r.similarity ?? r.rrf_score ?? 0).toFixed(4);
+          console.log(`--- ${filename} [chunk ${r.chunk_index}] (score: ${score}) ---`);
+          const preview = r.content.length > 300 ? r.content.slice(0, 300) + "..." : r.content;
           console.log(preview);
           console.log();
         }
@@ -280,30 +182,52 @@ async function main() {
     }
 
     case "stats": {
-      const store = await loadStore();
-      const fileEntries = store.entries.filter((e) => e.metadata.type === "file");
-      const convEntries = store.entries.filter((e) => e.metadata.type === "conversation");
-      const sources = new Set(fileEntries.map((e) => e.metadata.source));
-      console.log(`Vector store: ${store.entries.length} total entries`);
-      console.log(`  Files: ${fileEntries.length} chunks from ${sources.size} files`);
-      console.log(`  Conversations: ${convEntries.length} chunks`);
-      console.log(`  Model: ${store.model}`);
-      console.log(`  Last updated: ${store.updatedAt}`);
+      const { data: docs, error: docError } = await supabaseAdmin
+        .from("documents")
+        .select("filename, status, chunk_count")
+        .eq("user_id", PERSONAL_USER_ID)
+        .order("filename");
+
+      if (docError) {
+        console.error("Error fetching stats:", docError.message);
+        process.exit(1);
+      }
+
+      const completed = docs.filter((d) => d.status === "completed");
+      const totalChunks = completed.reduce((sum, d) => sum + (d.chunk_count || 0), 0);
+
+      console.log(`Knowledge base stats:`);
+      console.log(`  Documents: ${docs.length} total (${completed.length} indexed)`);
+      console.log(`  Chunks: ${totalChunks}`);
+      if (docs.length > 0) {
+        console.log(`\n  Files:`);
+        for (const d of docs) {
+          console.log(`    [${d.status}] ${d.filename} (${d.chunk_count ?? 0} chunks)`);
+        }
+      }
       break;
     }
 
     case "clear": {
-      await saveStore(createEmptyStore());
-      console.log("Vector store cleared.");
+      const { error } = await supabaseAdmin
+        .from("documents")
+        .delete()
+        .eq("user_id", PERSONAL_USER_ID);
+
+      if (error) {
+        console.error("Error clearing knowledge base:", error.message);
+        process.exit(1);
+      }
+      console.log("Knowledge base cleared.");
       break;
     }
 
     default:
       console.log("Usage:");
-      console.log("  node embed.js index <directory>   Index files in a directory");
-      console.log("  node embed.js search <query>      Search for similar content");
-      console.log("  node embed.js stats               Show vector store statistics");
-      console.log("  node embed.js clear               Reset the vector store");
+      console.log("  node embed.js index <directory>   Index files from a directory into Supabase");
+      console.log("  node embed.js search <query>      Test hybrid search");
+      console.log("  node embed.js stats               Show indexed documents and chunk counts");
+      console.log("  node embed.js clear               Delete all indexed documents");
       process.exit(command ? 1 : 0);
   }
 }

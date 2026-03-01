@@ -4,12 +4,17 @@ import "dotenv/config";
 import { readFileSync } from "node:fs";
 import express from "express";
 import cors from "cors";
+import { LMStudioClient } from "@lmstudio/sdk";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { LMStudioClient } from "@lmstudio/sdk";
-import { streamText } from "ai";
-import { tools } from "./tools/index.js";
+import { streamText, generateText } from "ai";
+import { tools, calendar, activeCalendar } from "./tools/index.js";
 import { createWebSearch } from "./tools/webSearch.js";
+import { createRagSearch } from "./tools/ragSearch.js";
+import { searchDocuments } from "./lib/retrieval.js";
+import { createDelegateResearchTool } from "./agents/index.js";
+import { createCalendarMonitor } from "./monitors/calendarMonitor.js";
+import { createMonitorRegistry } from "./monitors/index.js";
 
 const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8")
   .replace("{{DATE}}", new Date().toLocaleDateString("en-US", {
@@ -22,18 +27,37 @@ const provider = createOpenAICompatible({
   baseURL: process.env.LMSTUDIO_BASE_URL,
 });
 
-const client = new LMStudioClient();
-const lmmodel = await client.llm.model();
-const modelInfo = await lmmodel.getModelInfo();
-const contextLength = await lmmodel.getContextLength();
-const model = provider(modelInfo.path);
-console.log(`Model: ${modelInfo.path} (context: ${contextLength})`);
+// Fetch loaded model info from LM Studio HTTP API
+const apiBase = process.env.LMSTUDIO_BASE_URL.replace(/\/v1\/?$/, "");
+const modelsRes = await fetch(`${apiBase}/api/v0/models`);
+const modelsData = await modelsRes.json();
+const loadedLlm = modelsData.data.find(
+  (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm")
+);
+if (!loadedLlm) throw new Error("No loaded LLM found in LM Studio. Load a model first.");
+let contextLength = loadedLlm.loaded_context_length;
+const model = provider(loadedLlm.id);
+console.log(`Model: ${loadedLlm.id} (context: ${contextLength})`);
+
+// LMStudio SDK — for countTokens() (requires WebSocket SDK API enabled in LM Studio)
+const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(/\/v1\/?$/, "");
+let lmmodel = null;
+try {
+  const lmsClient = new LMStudioClient({ baseUrl: wsBase, logger: "error" });
+  lmmodel = await lmsClient.llm.model();
+  contextLength = await lmmodel.getContextLength();
+  console.log("[lmstudio-sdk] connected — token counting enabled");
+} catch (e) {
+  console.warn("[lmstudio-sdk] SDK unavailable, token counting disabled:", e.message.split("\n")[0]);
+  console.warn("[lmstudio-sdk] Enable 'SDK API' in LM Studio → Local Server settings");
+}
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 let allTools;
+let registry;
 
 // Tag filter: suppresses content inside <think>, <arg_key>, <arg_value> tags
 const SUPPRESS_TAGS = ["think", "arg_key", "arg_value"];
@@ -108,6 +132,13 @@ function processBuffer(buffer, insideTag, emit) {
 
 app.get("/api/context-info", (req, res) => {
   res.json({ contextLength });
+});
+
+app.get("/api/monitors", async (req, res) => {
+  if (!registry) return res.status(503).json({ error: "Not ready" });
+  const calMonitor = registry.get("calendar");
+  const upcoming = calMonitor ? await calMonitor.getUpcoming() : [];
+  res.json({ monitors: registry.status(), upcoming });
 });
 
 app.post("/api/chat", async (req, res) => {
@@ -193,9 +224,17 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    const serialized = serializeMessages(SYSTEM_PROMPT, chatMessages);
-    const tokenCount = await lmmodel.countTokens(serialized);
-    const shouldCompact = tokenCount / contextLength > AUTO_COMPACT_THRESHOLD;
+    let tokenCount = null;
+    if (lmmodel) {
+      try {
+        const serialized = serializeMessages(SYSTEM_PROMPT, chatMessages);
+        tokenCount = await lmmodel.countTokens(serialized);
+        console.log(`[countTokens] ${tokenCount} / ${contextLength}`);
+      } catch (e) {
+        console.warn("[countTokens] failed:", e.message);
+      }
+    }
+    const shouldCompact = tokenCount != null && tokenCount / contextLength > AUTO_COMPACT_THRESHOLD;
 
     send("done", { messages: chatMessages, tokenCount, contextLength, shouldCompact });
   } catch (err) {
@@ -215,7 +254,7 @@ app.post("/api/compact", async (req, res) => {
 
   if (messages.length <= KEEP_RECENT) {
     const serialized = serializeMessages(SYSTEM_PROMPT, messages);
-    const tokenCount = await lmmodel.countTokens(serialized);
+    const tokenCount = Math.round(serialized.length / 3.5);
     return res.json({ messages, tokenCount, contextLength, compacted: false });
   }
 
@@ -261,7 +300,7 @@ app.post("/api/compact", async (req, res) => {
     ];
 
     const serialized = serializeMessages(SYSTEM_PROMPT, compactedMessages);
-    const tokenCount = await lmmodel.countTokens(serialized);
+    const tokenCount = Math.round(serialized.length / 3.5);
 
     res.json({
       messages: compactedMessages,
@@ -289,12 +328,41 @@ async function start() {
   console.log("MCP tool names:", Object.keys(mcpTools));
 
   const webSearch = createWebSearch(mcpClient);
-  allTools = { ...tools, webSearch };
+
+  // RAG search tool (Supabase-backed hybrid vector+keyword search)
+  const ragSearch = createRagSearch(searchDocuments);
+
+  // Research sub-agent delegation tool (uses streamText internally)
+  const delegateResearch = createDelegateResearchTool({
+    model,
+    contextLength,
+    searchDocumentsFn: searchDocuments,
+    mcpClient,
+  });
+
+  allTools = { ...tools, webSearch, ragSearch, delegateResearch };
+
+  // Start background monitors
+  const calMonitor = createCalendarMonitor({ calendar, calendarId: activeCalendar });
+  calMonitor.onEvent((event) => {
+    console.log(`[monitor] calendar event: "${event.summary}" at ${event.start}`);
+    // Future: broadcast via SSE push to connected clients or trigger agent action
+  });
+  registry = createMonitorRegistry();
+  registry.register("calendar", calMonitor);
+  registry.startAll();
 
   const port = process.env.PORT || 3000;
   app.listen(port, () => {
     console.log(`Server listening on http://localhost:${port}`);
   });
 }
+
+// Graceful shutdown
+process.on("SIGINT", () => {
+  console.log("\n[server] shutting down...");
+  registry?.stopAll();
+  process.exit(0);
+});
 
 start();
