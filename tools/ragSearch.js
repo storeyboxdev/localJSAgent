@@ -5,7 +5,7 @@ import { z } from "zod";
  * Factory function — inject searchDocuments from lib/retrieval.js at wiring time.
  * Follows the same factory pattern as tools/webSearch.js.
  */
-export function createRagSearch(searchDocumentsFn) {
+export function createRagSearch(searchDocumentsFn, { agentId } = {}) {
   return tool({
     description:
       "Search the personal knowledge base (indexed documents and notes) using semantic + keyword hybrid search. " +
@@ -16,9 +16,11 @@ export function createRagSearch(searchDocumentsFn) {
       topK: z.number().optional().default(5).describe("Number of results to return (default 5)"),
     }),
     execute: async ({ query, topK = 5 }) => {
-      console.log(`[ragSearch] query: "${query}", topK: ${topK}`);
+      console.log(`[ragSearch] query: "${query}", topK: ${topK}${agentId ? `, agentId: ${agentId}` : ""}`);
       try {
-        const results = await searchDocumentsFn(query, { limit: topK });
+        const searchOptions = { limit: topK };
+        if (agentId) searchOptions.metadata_filter = { agent_id: agentId };
+        const results = await searchDocumentsFn(query, searchOptions);
         if (!results.length) {
           return "No relevant documents found in the local knowledge base.";
         }

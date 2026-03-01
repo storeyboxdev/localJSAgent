@@ -2,12 +2,15 @@
 
 import "dotenv/config";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
+import multer from "multer";
 import { LMStudioClient } from "@lmstudio/sdk";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { streamText, generateText } from "ai";
+import { streamText } from "ai";
 import { tools, calendar, activeCalendar } from "./tools/index.js";
 import { createWebSearch } from "./tools/webSearch.js";
 import { createRagSearch } from "./tools/ragSearch.js";
@@ -15,6 +18,22 @@ import { searchDocuments } from "./lib/retrieval.js";
 import { createDelegateResearchTool } from "./agents/index.js";
 import { createCalendarMonitor } from "./monitors/calendarMonitor.js";
 import { createMonitorRegistry } from "./monitors/index.js";
+import {
+  loadArchetypes,
+  getArchetype,
+  listAgents,
+  getAgent,
+  createAgent,
+  updateAgent,
+  saveAgentMessages,
+  deleteAgent,
+} from "./lib/agentStore.js";
+import { chunkText } from "./lib/chunking.js";
+import { generateEmbeddings } from "./lib/embeddings.js";
+import { supabaseAdmin as supabase } from "./lib/supabase.js";
+import { parseFile } from "./lib/parsing.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8")
   .replace("{{DATE}}", new Date().toLocaleDateString("en-US", {
@@ -56,6 +75,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Multer — memory storage for document uploads (no temp files)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB per file
+});
+
 let allTools;
 let registry;
 
@@ -65,6 +90,37 @@ const MAX_OPEN_LEN = Math.max(...SUPPRESS_TAGS.map((t) => `<${t}>`.length));
 const MAX_CLOSE_LEN = Math.max(...SUPPRESS_TAGS.map((t) => `</${t}>`.length));
 
 const AUTO_COMPACT_THRESHOLD = 0.80;
+
+// Personal user ID for Supabase vector store (single-user setup)
+const PERSONAL_USER_ID = "00000000-0000-0000-0000-000000000001";
+
+// System prompt for the agent-builder conversation
+const CONVERSE_SYSTEM_PROMPT = `You are an AI agent configuration assistant. Your job is to design a custom AI assistant for the user.
+
+Ask focused questions (one at a time, maximum 2 follow-ups) to understand:
+1. What the assistant should do / its main purpose
+2. Whether it should search the web or the user's knowledge base
+3. Any specific persona, tone, or constraints
+
+Available tools you can assign: dateTime, readFile, writeFile, deleteFile, listFiles, changeDirectory, currentDirectory, listCalendars, setActiveCalendar, listEvents, addEvent, editEvent, deleteEvent, webSearch, ragSearch, delegateResearch.
+
+When you have enough information (after 1-3 exchanges), end your message with a JSON block in this exact format — do not omit it:
+
+<agent-config>
+{
+  "name": "Short Name",
+  "icon": "🤖",
+  "systemPrompt": "You are ... [100-200 words]",
+  "tools": ["dateTime", "webSearch"]
+}
+</agent-config>
+
+Do not produce the <agent-config> block until you have enough information to make good choices.
+Keep all messages concise and friendly.`;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function serializeMessages(systemPrompt, messages) {
   const parts = [];
@@ -130,6 +186,23 @@ function processBuffer(buffer, insideTag, emit) {
   return { buffer, insideTag };
 }
 
+/** Build the tool subset for a given archetype tool list. If agentInstance is provided
+ *  and the subset includes ragSearch, a scoped ragSearch is created for that agent. */
+function buildToolSubset(toolNames, agentInstance) {
+  if (!toolNames || toolNames.length === 0) return allTools;
+  const subset = Object.fromEntries(
+    toolNames.filter((name) => allTools[name]).map((name) => [name, allTools[name]])
+  );
+  if (agentInstance && subset.ragSearch) {
+    subset.ragSearch = createRagSearch(searchDocuments, { agentId: agentInstance.id });
+  }
+  return subset;
+}
+
+// ---------------------------------------------------------------------------
+// Static endpoints
+// ---------------------------------------------------------------------------
+
 app.get("/api/context-info", (req, res) => {
   res.json({ contextLength });
 });
@@ -141,11 +214,130 @@ app.get("/api/monitors", async (req, res) => {
   res.json({ monitors: registry.status(), upcoming });
 });
 
-app.post("/api/chat", async (req, res) => {
+// ---------------------------------------------------------------------------
+// Archetype endpoints
+// ---------------------------------------------------------------------------
+
+app.get("/api/archetypes", (req, res) => {
+  res.json(loadArchetypes());
+});
+
+// ---------------------------------------------------------------------------
+// Agent instance endpoints
+// ---------------------------------------------------------------------------
+
+app.get("/api/agents", (req, res) => {
+  res.json(listAgents());
+});
+
+app.post("/api/agents", (req, res) => {
+  const { archetypeId, name, variables, systemPrompt, tools: agentTools, icon } = req.body;
+  if (!archetypeId && !systemPrompt) {
+    return res.status(400).json({ error: "archetypeId or systemPrompt required" });
+  }
+  try {
+    const instance = createAgent({ archetypeId, name, variables, systemPrompt, tools: agentTools, icon });
+    const { messages: _m, ...lightweight } = instance;
+    res.status(201).json(lightweight);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/api/agents/:id", (req, res) => {
+  const instance = getAgent(req.params.id);
+  if (!instance) return res.status(404).json({ error: "Agent not found" });
+  res.json(instance);
+});
+
+app.patch("/api/agents/:id", (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "name required" });
+  try {
+    const updated = updateAgent(req.params.id, { name });
+    const { messages: _m, ...lightweight } = updated;
+    res.json(lightweight);
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.delete("/api/agents/:id", (req, res) => {
+  try {
+    deleteAgent(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Agent builder conversation endpoint (SSE streaming)
+// ---------------------------------------------------------------------------
+
+app.post("/api/agents/converse", async (req, res) => {
   const { messages } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: "messages array required" });
   }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const result = streamText({
+      model,
+      system: CONVERSE_SYSTEM_PROMPT,
+      messages,
+    });
+
+    let buffer = "";
+    let insideTag = null;
+    for await (const chunk of result.textStream) {
+      buffer += chunk;
+      const state = processBuffer(buffer, insideTag, (text) => {
+        if (text) send("text", { text });
+      });
+      buffer = state.buffer;
+      insideTag = state.insideTag;
+    }
+    if (!insideTag && buffer.length > 0) send("text", { text: buffer });
+
+    send("done", {});
+  } catch (err) {
+    send("error", { error: err.message });
+  }
+
+  res.end();
+});
+
+// ---------------------------------------------------------------------------
+// Chat endpoint
+// ---------------------------------------------------------------------------
+
+app.post("/api/chat", async (req, res) => {
+  const { messages, agentId } = req.body;
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: "messages array required" });
+  }
+  if (!allTools) {
+    return res.status(503).json({ error: "Server still initializing, please wait" });
+  }
+
+  // Load agent instance if provided
+  let agentInstance = null;
+  if (agentId) {
+    agentInstance = getAgent(agentId);
+    if (!agentInstance) return res.status(404).json({ error: "Agent not found" });
+  }
+
+  const systemPrompt = agentInstance ? agentInstance.resolvedSystemPrompt : SYSTEM_PROMPT;
+  const activeTools = agentInstance ? buildToolSubset(agentInstance.tools, agentInstance) : allTools;
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -169,9 +361,9 @@ app.post("/api/chat", async (req, res) => {
 
       const result = streamText({
         model,
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: chatMessages,
-        tools: allTools,
+        tools: activeTools,
       });
 
       for await (const chunk of result.fullStream) {
@@ -227,7 +419,7 @@ app.post("/api/chat", async (req, res) => {
     let tokenCount = null;
     if (lmmodel) {
       try {
-        const serialized = serializeMessages(SYSTEM_PROMPT, chatMessages);
+        const serialized = serializeMessages(systemPrompt, chatMessages);
         tokenCount = await lmmodel.countTokens(serialized);
         console.log(`[countTokens] ${tokenCount} / ${contextLength}`);
       } catch (e) {
@@ -236,7 +428,16 @@ app.post("/api/chat", async (req, res) => {
     }
     const shouldCompact = tokenCount != null && tokenCount / contextLength > AUTO_COMPACT_THRESHOLD;
 
-    send("done", { messages: chatMessages, tokenCount, contextLength, shouldCompact });
+    // Auto-save agent messages to disk
+    if (agentId) {
+      try {
+        saveAgentMessages(agentId, chatMessages, tokenCount);
+      } catch (e) {
+        console.warn("[agentStore] save failed:", e.message);
+      }
+    }
+
+    send("done", { messages: chatMessages, tokenCount, contextLength, shouldCompact, agentId });
   } catch (err) {
     send("error", { error: err.message });
   }
@@ -244,16 +445,23 @@ app.post("/api/chat", async (req, res) => {
   res.end();
 });
 
+// ---------------------------------------------------------------------------
+// Compact endpoint
+// ---------------------------------------------------------------------------
+
 app.post("/api/compact", async (req, res) => {
-  const { messages } = req.body;
+  const { messages, agentId } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: "messages array required" });
   }
 
+  const agentInstance = agentId ? getAgent(agentId) : null;
+  const systemPrompt = agentInstance ? agentInstance.resolvedSystemPrompt : SYSTEM_PROMPT;
+
   const KEEP_RECENT = 6; // Keep last 6 messages (~3 exchanges)
 
   if (messages.length <= KEEP_RECENT) {
-    const serialized = serializeMessages(SYSTEM_PROMPT, messages);
+    const serialized = serializeMessages(systemPrompt, messages);
     const tokenCount = Math.round(serialized.length / 3.5);
     return res.json({ messages, tokenCount, contextLength, compacted: false });
   }
@@ -299,8 +507,17 @@ app.post("/api/compact", async (req, res) => {
       ...recentMessages,
     ];
 
-    const serialized = serializeMessages(SYSTEM_PROMPT, compactedMessages);
+    const serialized = serializeMessages(systemPrompt, compactedMessages);
     const tokenCount = Math.round(serialized.length / 3.5);
+
+    // Auto-save compacted messages for agent instances
+    if (agentId) {
+      try {
+        saveAgentMessages(agentId, compactedMessages, tokenCount);
+      } catch (e) {
+        console.warn("[agentStore] compact save failed:", e.message);
+      }
+    }
 
     res.json({
       messages: compactedMessages,
@@ -314,6 +531,148 @@ app.post("/api/compact", async (req, res) => {
     console.error("[compact] error:", err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Document upload / knowledge base endpoints
+// ---------------------------------------------------------------------------
+
+app.get("/api/documents", async (req, res) => {
+  try {
+    let docQuery = supabase
+      .from("documents")
+      .select("id, filename, metadata, created_at")
+      .eq("user_id", PERSONAL_USER_ID)
+      .order("created_at", { ascending: false });
+
+    if (req.query.agentId) {
+      docQuery = docQuery.eq("metadata->>agent_id", req.query.agentId);
+    }
+
+    const { data, error } = await docQuery;
+
+    if (error) throw error;
+
+    // Attach chunk counts
+    const ids = (data ?? []).map((d) => d.id);
+    let chunkCounts = {};
+    if (ids.length > 0) {
+      const { data: chunks } = await supabase
+        .from("document_chunks")
+        .select("document_id")
+        .in("document_id", ids);
+      for (const c of chunks ?? []) {
+        chunkCounts[c.document_id] = (chunkCounts[c.document_id] ?? 0) + 1;
+      }
+    }
+
+    res.json((data ?? []).map((d) => ({ ...d, chunkCount: chunkCounts[d.id] ?? 0 })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded" });
+  }
+
+  // Build metadata from agentId if provided (multer populates req.body from multipart text fields)
+  const { agentId } = req.body;
+  let uploadMetadata = {};
+  if (agentId) {
+    const agentInstance = getAgent(agentId);
+    if (agentInstance) {
+      uploadMetadata = {
+        agent_id: agentInstance.id,
+        agent_name: agentInstance.name,
+        archetype_id: agentInstance.archetypeId ?? null,
+      };
+      if (agentInstance.variables?.BOOK_TITLE) uploadMetadata.book_title = agentInstance.variables.BOOK_TITLE;
+      if (agentInstance.variables?.AUTHOR) uploadMetadata.author = agentInstance.variables.AUTHOR;
+    }
+  }
+
+  const results = [];
+
+  for (const file of req.files) {
+    const filename = file.originalname;
+    try {
+      // Parse content from buffer (handles text, code, PDF, DOCX via docling-serve)
+      const content = await parseFile(file.buffer, filename);
+
+      // Chunk the document
+      const chunks = chunkText(content);
+
+      // Generate embeddings for all chunks
+      const texts = chunks.map((c) => c.content);
+      const embeddings = await generateEmbeddings(texts);
+
+      // Insert document record
+      const { data: docData, error: docErr } = await supabase
+        .from("documents")
+        .insert({
+          user_id: PERSONAL_USER_ID,
+          filename,
+          content,
+          file_type: filename.split(".").pop() ?? "txt",
+          file_size: file.buffer.length,
+          storage_path: filename,
+          status: "completed",
+          metadata: uploadMetadata,
+        })
+        .select("id")
+        .single();
+
+      if (docErr) throw new Error(`DB insert failed: ${docErr.message}`);
+      const documentId = docData.id;
+
+      // Insert chunks with embeddings
+      const chunkRows = chunks.map((chunk, i) => ({
+        document_id: documentId,
+        user_id: PERSONAL_USER_ID,
+        content: chunk.content,
+        chunk_index: chunk.chunkIndex,
+        embedding: embeddings[i],
+      }));
+
+      const { error: chunkErr } = await supabase.from("document_chunks").insert(chunkRows);
+      if (chunkErr) throw new Error(`Chunk insert failed: ${chunkErr.message}`);
+
+      results.push({ filename, status: "ok", documentId, chunkCount: chunks.length });
+      console.log(`[upload] indexed "${filename}" → ${chunks.length} chunks`);
+    } catch (err) {
+      console.error(`[upload] failed for "${filename}":`, err.message);
+      results.push({ filename, status: "error", error: err.message });
+    }
+  }
+
+  res.json({ results });
+});
+
+app.delete("/api/documents/:id", async (req, res) => {
+  try {
+    // Chunks are deleted by cascade (FK constraint) in Supabase
+    const { error } = await supabase
+      .from("documents")
+      .delete()
+      .eq("id", req.params.id)
+      .eq("user_id", PERSONAL_USER_ID);
+
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Server startup — listen immediately so static endpoints work before MCP connects
+// ---------------------------------------------------------------------------
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server listening on http://localhost:${port}`);
 });
 
 async function start() {
@@ -352,10 +711,7 @@ async function start() {
   registry.register("calendar", calMonitor);
   registry.startAll();
 
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => {
-    console.log(`Server listening on http://localhost:${port}`);
-  });
+  console.log("All tools loaded. Ready.");
 }
 
 // Graceful shutdown
