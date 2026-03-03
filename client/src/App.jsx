@@ -622,6 +622,9 @@ function App() {
   const [showNewAgentModal, setShowNewAgentModal] = useState(false);
   const [showKBPanel, setShowKBPanel] = useState(false);
 
+  // Calendar event notifications from the monitor
+  const [agentNotification, setAgentNotification] = useState(null);
+
   const messagesEndRef = useRef(null);
   const apiMessagesRef = useRef([]);
 
@@ -639,6 +642,37 @@ function App() {
       .catch(console.error);
 
     fetchAgents();
+  }, []);
+
+  // Persistent SSE connection for calendar event notifications
+  useEffect(() => {
+    const es = new EventSource("/api/events");
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === "agent-event") {
+          setAgents((prev) => {
+            const agent = prev.find((a) => a.id === data.agentId);
+            setAgentNotification({
+              agentId: data.agentId,
+              agentName: agent?.name ?? "Agent",
+              agentIcon: agent?.icon ?? "🤖",
+              summary: data.event.summary,
+            });
+            return prev;
+          });
+        } else if (data.type === "news-briefing") {
+          setAgentNotification({
+            agentId: data.agentId,
+            agentName: data.agentName ?? "News Briefing",
+            agentIcon: data.agentIcon ?? "📰",
+            summary: data.summary ?? "Your news briefing is ready",
+          });
+        }
+      } catch (_) {}
+    };
+    es.onerror = () => {};
+    return () => es.close();
   }, []);
 
   async function fetchAgents() {
@@ -770,7 +804,7 @@ function App() {
 
     setMessages((prev) => [...prev, { role: "user", text: userMessage }]);
     apiMessagesRef.current.push({ role: "user", content: userMessage });
-    setMessages((prev) => [...prev, { role: "assistant", text: "" }]);
+    setMessages((prev) => [...prev, { role: "assistant", text: "", think: "" }]);
 
     try {
       const body = { messages: apiMessagesRef.current };
@@ -815,6 +849,16 @@ function App() {
                 updated[updated.length - 1] = {
                   ...last,
                   text: last.text + `\n[calling ${data.toolName}...]\n`,
+                };
+                return updated;
+              });
+            } else if (eventType === "think") {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                updated[updated.length - 1] = {
+                  ...last,
+                  think: (last.think ?? "") + data.text,
                 };
                 return updated;
               });
@@ -950,6 +994,17 @@ function App() {
           </div>
         )}
 
+        {agentNotification && (
+          <div className="agent-notification" onClick={() => {
+            loadAgent(agentNotification.agentId);
+            setInput(`My scheduled event "${agentNotification.summary}" is starting now.`);
+            setAgentNotification(null);
+          }}>
+            <span>📅 <strong>{agentNotification.agentIcon} {agentNotification.agentName}</strong>: "{agentNotification.summary}" — click to open</span>
+            <button className="agent-notification-close" onClick={(e) => { e.stopPropagation(); setAgentNotification(null); }}>✕</button>
+          </div>
+        )}
+
         <div className="chat-messages">
           {messages.length === 0 && (
             <div className="empty-state">
@@ -964,6 +1019,12 @@ function App() {
                 <div className="message-label">
                   {msg.role === "user" ? "You" : activeAgent?.name ?? "Bot"}
                 </div>
+              )}
+              {msg.think && (
+                <details className="think-bubble">
+                  <summary>Thinking...</summary>
+                  <div className="think-content">{msg.think}</div>
+                </details>
               )}
               <div className="message-text">{msg.text}</div>
             </div>

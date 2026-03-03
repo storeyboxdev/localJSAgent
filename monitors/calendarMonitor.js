@@ -1,7 +1,34 @@
 import "dotenv/config";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const STATE_FILE = join(__dirname, "..", ".monitor-state.json");
 
 const DEFAULT_POLL_INTERVAL_MS = parseInt(process.env.CALENDAR_POLL_INTERVAL_MS ?? "60000");
 const DEFAULT_LOOKAHEAD_MINUTES = parseInt(process.env.CALENDAR_LOOKAHEAD_MINUTES ?? "15");
+
+function loadFiredEvents() {
+  try {
+    const data = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+    const now = new Date();
+    // Drop any entries whose event start time is already past
+    return new Map(
+      (data.firedEvents ?? []).filter(([, startTime]) => new Date(startTime) >= now)
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function saveFiredEvents(firedEvents) {
+  try {
+    writeFileSync(STATE_FILE, JSON.stringify({ firedEvents: [...firedEvents.entries()] }));
+  } catch (e) {
+    console.error("[calendarMonitor] state save error:", e.message);
+  }
+}
 
 /**
  * Create a calendar monitor that polls Google Calendar for upcoming events.
@@ -13,8 +40,8 @@ const DEFAULT_LOOKAHEAD_MINUTES = parseInt(process.env.CALENDAR_LOOKAHEAD_MINUTE
  */
 export function createCalendarMonitor({ calendar, calendarId }) {
   let timer = null;
-  // Map<"eventId::startTime", startTime> — prevents duplicate event fires
-  const firedEvents = new Map();
+  // Map<"eventId::startTime", startTime> — persisted across restarts
+  const firedEvents = loadFiredEvents();
   const handlers = [];
 
   async function poll() {
@@ -38,6 +65,7 @@ export function createCalendarMonitor({ calendar, calendarId }) {
 
         if (!firedEvents.has(key)) {
           firedEvents.set(key, startTime);
+          saveFiredEvents(firedEvents);
 
           const payload = {
             id: event.id,
@@ -45,6 +73,7 @@ export function createCalendarMonitor({ calendar, calendarId }) {
             start: startTime,
             end: event.end?.dateTime ?? event.end?.date,
             location: event.location ?? null,
+            agentId: event.extendedProperties?.private?.agentId ?? null,
           };
 
           console.log(`[calendarMonitor] upcoming: "${event.summary}" at ${startTime}`);
@@ -60,9 +89,11 @@ export function createCalendarMonitor({ calendar, calendarId }) {
       }
 
       // Prune stale entries (events whose start time is now in the past)
+      let pruned = false;
       for (const [key, startTime] of firedEvents) {
-        if (new Date(startTime) < now) firedEvents.delete(key);
+        if (new Date(startTime) < now) { firedEvents.delete(key); pruned = true; }
       }
+      if (pruned) saveFiredEvents(firedEvents);
     } catch (err) {
       console.error("[calendarMonitor] poll error:", err.message);
       // Non-fatal — log and continue polling
@@ -111,6 +142,7 @@ export function createCalendarMonitor({ calendar, calendarId }) {
           start: e.start?.dateTime ?? e.start?.date,
           end: e.end?.dateTime ?? e.end?.date,
           location: e.location ?? null,
+          agentId: e.extendedProperties?.private?.agentId ?? null,
         }));
       } catch (err) {
         console.error("[calendarMonitor] getUpcoming error:", err.message);

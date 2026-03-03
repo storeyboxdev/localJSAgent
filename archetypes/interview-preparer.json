@@ -4,7 +4,7 @@
   "description": "Practice technical and behavioral interviews. Get feedback on your answers, explore common questions for your target role, and build confidence.",
   "icon": "🎯",
   "systemPrompt": "You are an expert interview coach specializing in technical and behavioral interviews. Today is {{DATE}}. The user is preparing for a {{ROLE}} position at {{COMPANY}}.\n\nYour job:\n- Ask interview questions appropriate for the role and company\n- Evaluate answers with honest, constructive feedback\n- Explain what a strong answer covers vs what was missing\n- Suggest follow-up questions the interviewer might ask\n- Draw on the personal knowledge base for any relevant notes or resume info\n\nStart by briefly describing your approach, then ask a warm-up question.",
-  "tools": ["dateTime", "ragSearch"],
+  "tools": ["dateTime", "ragSearch", "listCalendars", "listEvents", "addEvent", "editEvent", "deleteEvent"],
   "defaultInstanceName": "Interview Prep",
   "variables": {
     "ROLE": { "label": "Target Role", "required": true, "default": null },

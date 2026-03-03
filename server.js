@@ -1,6 +1,8 @@
 // server.js - Express API for chat agent with SSE streaming
 
 import "dotenv/config";
+import { Laminar, getTracer } from "@lmnr-ai/lmnr";
+Laminar.initialize({ projectApiKey: process.env.LMNR_PROJECT_API_KEY });
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,14 +12,16 @@ import multer from "multer";
 import { LMStudioClient } from "@lmstudio/sdk";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { streamText } from "ai";
+import { streamText, generateText } from "ai";
 import { tools, calendar, activeCalendar } from "./tools/index.js";
+import { createAddEvent, createEditEvent } from "./tools/gcalendar.js";
 import { createWebSearch } from "./tools/webSearch.js";
 import { createRagSearch } from "./tools/ragSearch.js";
 import { searchDocuments } from "./lib/retrieval.js";
 import { createDelegateResearchTool } from "./agents/index.js";
 import { createCalendarMonitor } from "./monitors/calendarMonitor.js";
 import { createMonitorRegistry } from "./monitors/index.js";
+import { createNewsMonitor } from "./monitors/newsMonitor.js";
 import {
   loadArchetypes,
   getArchetype,
@@ -35,10 +39,15 @@ import { parseFile } from "./lib/parsing.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8")
-  .replace("{{DATE}}", new Date().toLocaleDateString("en-US", {
-    weekday: "long", year: "numeric", month: "long", day: "numeric",
-  }));
+const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8").replace(
+  "{{DATE}}",
+  new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }),
+);
 
 const provider = createOpenAICompatible({
   name: "lmstudio",
@@ -50,16 +59,53 @@ const provider = createOpenAICompatible({
 const apiBase = process.env.LMSTUDIO_BASE_URL.replace(/\/v1\/?$/, "");
 const modelsRes = await fetch(`${apiBase}/api/v0/models`);
 const modelsData = await modelsRes.json();
-const loadedLlm = modelsData.data.find(
-  (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm")
+const loadedModels = modelsData.data.filter(
+  (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm"),
 );
-if (!loadedLlm) throw new Error("No loaded LLM found in LM Studio. Load a model first.");
+if (loadedModels.length === 0)
+  throw new Error("No loaded LLM found in LM Studio. Load a model first.");
+const preferredId = process.env.MAIN_LLM;
+const loadedLlm = preferredId
+  ? (loadedModels.find((m) => m.id === preferredId) ??
+    loadedModels.find((m) =>
+      m.id.toLowerCase().includes(preferredId.toLowerCase()),
+    ) ??
+    loadedModels[0])
+  : loadedModels[0];
+if (
+  preferredId &&
+  loadedLlm.id !== preferredId &&
+  !loadedLlm.id.toLowerCase().includes(preferredId.toLowerCase())
+) {
+  console.warn(
+    `[model] MAIN_LLM="${preferredId}" not found among loaded models — using "${loadedLlm.id}" instead`,
+  );
+}
 let contextLength = loadedLlm.loaded_context_length;
+
+// Thinking models (Qwen3, DeepSeek-R1, QwQ) emit <think> blocks by default.
+// For a personal assistant, thinking mode is counterproductive: it's slower, burns
+// context, and causes UI artifacts. Disable it via the /no_think system-prompt prefix
+// that Qwen3's chat template (and derivatives) respect.
+const THINKING_MODEL_RE = /qwen3|deepseek-r1|qwq/i;
+const isThinkingModel = THINKING_MODEL_RE.test(loadedLlm.id);
+if (isThinkingModel)
+  console.log(
+    `[model] thinking model detected — thinking mode disabled via /no_think`,
+  );
+
+/** Prepend /no_think for thinking models so the model skips reasoning output. */
+function noThink(prompt) {
+  return isThinkingModel ? `/no_think\n${prompt}` : prompt;
+}
 const model = provider(loadedLlm.id);
 console.log(`Model: ${loadedLlm.id} (context: ${contextLength})`);
 
 // LMStudio SDK — for countTokens() (requires WebSocket SDK API enabled in LM Studio)
-const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(/\/v1\/?$/, "");
+const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(
+  /\/v1\/?$/,
+  "",
+);
 let lmmodel = null;
 try {
   const lmsClient = new LMStudioClient({ baseUrl: wsBase, logger: "error" });
@@ -67,8 +113,13 @@ try {
   contextLength = await lmmodel.getContextLength();
   console.log("[lmstudio-sdk] connected — token counting enabled");
 } catch (e) {
-  console.warn("[lmstudio-sdk] SDK unavailable, token counting disabled:", e.message.split("\n")[0]);
-  console.warn("[lmstudio-sdk] Enable 'SDK API' in LM Studio → Local Server settings");
+  console.warn(
+    "[lmstudio-sdk] SDK unavailable, token counting disabled:",
+    e.message.split("\n")[0],
+  );
+  console.warn(
+    "[lmstudio-sdk] Enable 'SDK API' in LM Studio → Local Server settings",
+  );
 }
 
 const app = express();
@@ -89,10 +140,12 @@ const SUPPRESS_TAGS = ["think", "arg_key", "arg_value"];
 const MAX_OPEN_LEN = Math.max(...SUPPRESS_TAGS.map((t) => `<${t}>`.length));
 const MAX_CLOSE_LEN = Math.max(...SUPPRESS_TAGS.map((t) => `</${t}>`.length));
 
-const AUTO_COMPACT_THRESHOLD = 0.80;
+const AUTO_COMPACT_THRESHOLD = 0.8;
 
 // Personal user ID for Supabase vector store (single-user setup)
 const PERSONAL_USER_ID = "00000000-0000-0000-0000-000000000001";
+
+const NEWS_ARCHETYPE_ID = "news-briefing";
 
 // System prompt for the agent-builder conversation
 const CONVERSE_SYSTEM_PROMPT = `You are an AI agent configuration assistant. Your job is to design a custom AI assistant for the user.
@@ -145,19 +198,31 @@ function serializeMessages(systemPrompt, messages) {
   return parts.join("\n");
 }
 
-function processBuffer(buffer, insideTag, emit) {
+function processBuffer(buffer, insideTag, emit, emitThink) {
   while (buffer.length > 0) {
     if (insideTag) {
       const endTag = `</${insideTag}>`;
       const endIdx = buffer.indexOf(endTag);
       if (endIdx !== -1) {
+        if (insideTag === "think") {
+          const tail = buffer.slice(0, endIdx);
+          if (tail) emitThink(tail);
+        }
         insideTag = null;
         buffer = buffer.slice(endIdx + endTag.length);
       } else {
-        buffer =
-          buffer.length > MAX_CLOSE_LEN - 1
-            ? buffer.slice(-(MAX_CLOSE_LEN - 1))
-            : buffer;
+        if (insideTag === "think") {
+          if (buffer.length > MAX_CLOSE_LEN - 1) {
+            const safe = buffer.slice(0, -(MAX_CLOSE_LEN - 1));
+            if (safe) emitThink(safe);
+            buffer = buffer.slice(-(MAX_CLOSE_LEN - 1));
+          }
+        } else {
+          buffer =
+            buffer.length > MAX_CLOSE_LEN - 1
+              ? buffer.slice(-(MAX_CLOSE_LEN - 1))
+              : buffer;
+        }
         break;
       }
     } else {
@@ -186,15 +251,22 @@ function processBuffer(buffer, insideTag, emit) {
   return { buffer, insideTag };
 }
 
-/** Build the tool subset for a given archetype tool list. If agentInstance is provided
- *  and the subset includes ragSearch, a scoped ragSearch is created for that agent. */
+/** Build the tool subset for a given archetype tool list. If agentInstance is provided,
+ *  agent-aware tools (ragSearch, addEvent, editEvent) are created with the agent's ID. */
 function buildToolSubset(toolNames, agentInstance) {
   if (!toolNames || toolNames.length === 0) return allTools;
   const subset = Object.fromEntries(
-    toolNames.filter((name) => allTools[name]).map((name) => [name, allTools[name]])
+    toolNames
+      .filter((name) => allTools[name])
+      .map((name) => [name, allTools[name]]),
   );
-  if (agentInstance && subset.ragSearch) {
-    subset.ragSearch = createRagSearch(searchDocuments, { agentId: agentInstance.id });
+  if (agentInstance) {
+    if (subset.ragSearch)
+      subset.ragSearch = createRagSearch(searchDocuments, {
+        agentId: agentInstance.id,
+      });
+    if (subset.addEvent) subset.addEvent = createAddEvent(agentInstance.id);
+    if (subset.editEvent) subset.editEvent = createEditEvent(agentInstance.id);
   }
   return subset;
 }
@@ -206,6 +278,26 @@ function buildToolSubset(toolNames, agentInstance) {
 app.get("/api/context-info", (req, res) => {
   res.json({ contextLength });
 });
+
+// ---------------------------------------------------------------------------
+// SSE event bus — persistent connection for server-push notifications
+// ---------------------------------------------------------------------------
+
+const sseClients = new Set();
+
+app.get("/api/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  sseClients.add(res);
+  req.on("close", () => sseClients.delete(res));
+});
+
+function broadcastSSE(payload) {
+  const line = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const client of sseClients) client.write(line);
+}
 
 app.get("/api/monitors", async (req, res) => {
   if (!registry) return res.status(503).json({ error: "Not ready" });
@@ -231,12 +323,28 @@ app.get("/api/agents", (req, res) => {
 });
 
 app.post("/api/agents", (req, res) => {
-  const { archetypeId, name, variables, systemPrompt, tools: agentTools, icon } = req.body;
+  const {
+    archetypeId,
+    name,
+    variables,
+    systemPrompt,
+    tools: agentTools,
+    icon,
+  } = req.body;
   if (!archetypeId && !systemPrompt) {
-    return res.status(400).json({ error: "archetypeId or systemPrompt required" });
+    return res
+      .status(400)
+      .json({ error: "archetypeId or systemPrompt required" });
   }
   try {
-    const instance = createAgent({ archetypeId, name, variables, systemPrompt, tools: agentTools, icon });
+    const instance = createAgent({
+      archetypeId,
+      name,
+      variables,
+      systemPrompt,
+      tools: agentTools,
+      icon,
+    });
     const { messages: _m, ...lightweight } = instance;
     res.status(201).json(lightweight);
   } catch (err) {
@@ -271,6 +379,22 @@ app.delete("/api/agents/:id", (req, res) => {
   }
 });
 
+app.post("/api/agents/:id/run-briefing", async (req, res) => {
+  if (!registry) return res.status(503).json({ error: "Not ready" });
+  const newsMonitor = registry.get("news");
+  if (!newsMonitor) return res.status(503).json({ error: "News monitor not running" });
+  const instance = getAgent(req.params.id);
+  if (!instance) return res.status(404).json({ error: "Agent not found" });
+  if (instance.archetypeId !== NEWS_ARCHETYPE_ID)
+    return res.status(400).json({ error: "Agent is not a news-briefing agent" });
+  try {
+    await newsMonitor.runNow(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Agent builder conversation endpoint (SSE streaming)
 // ---------------------------------------------------------------------------
@@ -292,17 +416,21 @@ app.post("/api/agents/converse", async (req, res) => {
   try {
     const result = streamText({
       model,
-      system: CONVERSE_SYSTEM_PROMPT,
+      system: noThink(CONVERSE_SYSTEM_PROMPT),
       messages,
+      experimental_telemetry: { isEnabled: true, tracer: getTracer() },
     });
 
     let buffer = "";
     let insideTag = null;
     for await (const chunk of result.textStream) {
       buffer += chunk;
-      const state = processBuffer(buffer, insideTag, (text) => {
-        if (text) send("text", { text });
-      });
+      const state = processBuffer(
+        buffer,
+        insideTag,
+        (text) => { if (text) send("text", { text }); },
+        () => {},
+      );
       buffer = state.buffer;
       insideTag = state.insideTag;
     }
@@ -326,18 +454,25 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "messages array required" });
   }
   if (!allTools) {
-    return res.status(503).json({ error: "Server still initializing, please wait" });
+    return res
+      .status(503)
+      .json({ error: "Server still initializing, please wait" });
   }
 
   // Load agent instance if provided
   let agentInstance = null;
   if (agentId) {
     agentInstance = getAgent(agentId);
-    if (!agentInstance) return res.status(404).json({ error: "Agent not found" });
+    if (!agentInstance)
+      return res.status(404).json({ error: "Agent not found" });
   }
 
-  const systemPrompt = agentInstance ? agentInstance.resolvedSystemPrompt : SYSTEM_PROMPT;
-  const activeTools = agentInstance ? buildToolSubset(agentInstance.tools, agentInstance) : allTools;
+  const systemPrompt = agentInstance
+    ? agentInstance.resolvedSystemPrompt
+    : SYSTEM_PROMPT;
+  const activeTools = agentInstance
+    ? buildToolSubset(agentInstance.tools, agentInstance)
+    : allTools;
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -352,7 +487,7 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     // Tool execution loop (capped to prevent runaway)
-    const MAX_TOOL_ROUNDS = 5;
+    const MAX_TOOL_ROUNDS = 3;
     let toolRound = 0;
     while (true) {
       let insideTag = null;
@@ -364,6 +499,7 @@ app.post("/api/chat", async (req, res) => {
         system: systemPrompt,
         messages: chatMessages,
         tools: activeTools,
+        experimental_telemetry: { isEnabled: true, tracer: getTracer() },
       });
 
       for await (const chunk of result.fullStream) {
@@ -377,9 +513,12 @@ app.post("/api/chat", async (req, res) => {
           );
         } else if (chunk.type === "text-delta") {
           buffer += chunk.text;
-          const state = processBuffer(buffer, insideTag, (text) => {
-            if (text) send("text", { text });
-          });
+          const state = processBuffer(
+            buffer,
+            insideTag,
+            (text) => { if (text) send("text", { text }); },
+            (text) => send("think", { text }),
+          );
           buffer = state.buffer;
           insideTag = state.insideTag;
         } else if (chunk.type === "tool-call") {
@@ -426,7 +565,8 @@ app.post("/api/chat", async (req, res) => {
         console.warn("[countTokens] failed:", e.message);
       }
     }
-    const shouldCompact = tokenCount != null && tokenCount / contextLength > AUTO_COMPACT_THRESHOLD;
+    const shouldCompact =
+      tokenCount != null && tokenCount / contextLength > AUTO_COMPACT_THRESHOLD;
 
     // Auto-save agent messages to disk
     if (agentId) {
@@ -437,7 +577,13 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    send("done", { messages: chatMessages, tokenCount, contextLength, shouldCompact, agentId });
+    send("done", {
+      messages: chatMessages,
+      tokenCount,
+      contextLength,
+      shouldCompact,
+      agentId,
+    });
   } catch (err) {
     send("error", { error: err.message });
   }
@@ -456,7 +602,9 @@ app.post("/api/compact", async (req, res) => {
   }
 
   const agentInstance = agentId ? getAgent(agentId) : null;
-  const systemPrompt = agentInstance ? agentInstance.resolvedSystemPrompt : SYSTEM_PROMPT;
+  const systemPrompt = agentInstance
+    ? agentInstance.resolvedSystemPrompt
+    : SYSTEM_PROMPT;
 
   const KEEP_RECENT = 6; // Keep last 6 messages (~3 exchanges)
 
@@ -486,8 +634,11 @@ app.post("/api/compact", async (req, res) => {
   try {
     const result = streamText({
       model,
-      system: "You are a precise summarizer. Output only the summary, nothing else.",
+      system: noThink(
+        "You are a precise summarizer. Output only the summary, nothing else.",
+      ),
       messages: summaryPrompt,
+      experimental_telemetry: { isEnabled: true, tracer: getTracer() },
     });
 
     let summaryText = "";
@@ -502,7 +653,8 @@ app.post("/api/compact", async (req, res) => {
       },
       {
         role: "assistant",
-        content: "I have the conversation context from the summary. Let's continue.",
+        content:
+          "I have the conversation context from the summary. Let's continue.",
       },
       ...recentMessages,
     ];
@@ -566,7 +718,9 @@ app.get("/api/documents", async (req, res) => {
       }
     }
 
-    res.json((data ?? []).map((d) => ({ ...d, chunkCount: chunkCounts[d.id] ?? 0 })));
+    res.json(
+      (data ?? []).map((d) => ({ ...d, chunkCount: chunkCounts[d.id] ?? 0 })),
+    );
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -588,8 +742,10 @@ app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
         agent_name: agentInstance.name,
         archetype_id: agentInstance.archetypeId ?? null,
       };
-      if (agentInstance.variables?.BOOK_TITLE) uploadMetadata.book_title = agentInstance.variables.BOOK_TITLE;
-      if (agentInstance.variables?.AUTHOR) uploadMetadata.author = agentInstance.variables.AUTHOR;
+      if (agentInstance.variables?.BOOK_TITLE)
+        uploadMetadata.book_title = agentInstance.variables.BOOK_TITLE;
+      if (agentInstance.variables?.AUTHOR)
+        uploadMetadata.author = agentInstance.variables.AUTHOR;
     }
   }
 
@@ -636,10 +792,17 @@ app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
         embedding: embeddings[i],
       }));
 
-      const { error: chunkErr } = await supabase.from("document_chunks").insert(chunkRows);
+      const { error: chunkErr } = await supabase
+        .from("document_chunks")
+        .insert(chunkRows);
       if (chunkErr) throw new Error(`Chunk insert failed: ${chunkErr.message}`);
 
-      results.push({ filename, status: "ok", documentId, chunkCount: chunks.length });
+      results.push({
+        filename,
+        status: "ok",
+        documentId,
+        chunkCount: chunks.length,
+      });
       console.log(`[upload] indexed "${filename}" → ${chunks.length} chunks`);
     } catch (err) {
       console.error(`[upload] failed for "${filename}":`, err.message);
@@ -697,18 +860,42 @@ async function start() {
     contextLength,
     searchDocumentsFn: searchDocuments,
     mcpClient,
+    isThinkingModel,
   });
 
   allTools = { ...tools, webSearch, ragSearch, delegateResearch };
 
   // Start background monitors
-  const calMonitor = createCalendarMonitor({ calendar, calendarId: activeCalendar });
-  calMonitor.onEvent((event) => {
-    console.log(`[monitor] calendar event: "${event.summary}" at ${event.start}`);
-    // Future: broadcast via SSE push to connected clients or trigger agent action
+  const calMonitor = createCalendarMonitor({
+    calendar,
+    calendarId: activeCalendar,
   });
+  calMonitor.onEvent((event) => {
+    console.log(
+      `[monitor] calendar event: "${event.summary}" at ${event.start}`,
+    );
+    if (event.agentId) {
+      broadcastSSE({ type: "agent-event", agentId: event.agentId, event });
+    }
+  });
+
+  const newsMonitor = createNewsMonitor({
+    model,
+    mcpClient,
+    listAgentsFn: listAgents,
+    getAgentFn: getAgent,
+    saveAgentMessagesFn: saveAgentMessages,
+    noThinkFn: noThink,
+    NEWS_ARCHETYPE_ID,
+  });
+  newsMonitor.onBriefing((payload) => {
+    console.log(`[monitor] news briefing ready: "${payload.agentName}"`);
+    broadcastSSE({ type: "news-briefing", ...payload });
+  });
+
   registry = createMonitorRegistry();
   registry.register("calendar", calMonitor);
+  registry.register("news", newsMonitor);
   registry.startAll();
 
   console.log("All tools loaded. Ready.");

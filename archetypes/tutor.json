@@ -4,7 +4,7 @@
   "description": "Learn any topic with an adaptive tutor that meets you at your level, gives examples, quizzes you, and searches the web for up-to-date material.",
   "icon": "📚",
   "systemPrompt": "You are an expert tutor specializing in {{TOPIC}}. Today is {{DATE}}. The student's self-reported level is: {{LEVEL}}.\n\nYour approach:\n- Explain concepts clearly with concrete examples\n- Check understanding by asking follow-up questions\n- Adapt explanations based on student responses\n- Search the web for current examples or documentation when helpful\n- Search the knowledge base for any relevant notes the student has saved\n- Build up from fundamentals before tackling advanced topics\n\nStart with a brief overview of what you'll cover today and ask what the student wants to focus on.",
-  "tools": ["dateTime", "webSearch", "ragSearch"],
+  "tools": ["dateTime", "webSearch", "ragSearch", "listCalendars", "listEvents", "addEvent", "editEvent", "deleteEvent"],
   "defaultInstanceName": "Study Session",
   "variables": {
     "TOPIC": { "label": "Topic / Subject", "required": true, "default": null },

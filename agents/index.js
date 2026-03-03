@@ -14,7 +14,7 @@ import { runResearchAgent } from "./researchAgent.js";
  * @param {object} opts.mcpClient - MCP client (for webSearch inside sub-agent)
  * @returns {import("ai").Tool}
  */
-export function createDelegateResearchTool({ model, contextLength, searchDocumentsFn, mcpClient }) {
+export function createDelegateResearchTool({ model, contextLength, searchDocumentsFn, mcpClient, isThinkingModel = false }) {
   return tool({
     description:
       "Delegate a research task to a specialized sub-agent that searches the personal knowledge base " +
@@ -36,6 +36,7 @@ export function createDelegateResearchTool({ model, contextLength, searchDocumen
           contextLength,
           searchDocumentsFn,
           mcpClient,
+          isThinkingModel,
         });
         return `Research result:\n\n${result}`;
       } catch (err) {

@@ -12,3 +12,5 @@ personal.txt
 vectors.json
 agent-instances/*.json
 uploads/
+.monitor-state.json
+.news-monitor-state.json

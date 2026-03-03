@@ -1,4 +1,5 @@
 import { tool, streamText } from "ai";
+import { getTracer } from "@lmnr-ai/lmnr";
 import { z } from "zod";
 
 const MAX_TOOL_ROUNDS = 3;
@@ -28,7 +29,7 @@ Guidelines:
  * @param {object} opts.mcpClient - MCP client for web search (from @ai-sdk/mcp)
  * @returns {Promise<string>} Compact result string
  */
-export async function runResearchAgent({ query, model, contextLength, searchDocumentsFn, mcpClient }) {
+export async function runResearchAgent({ query, model, contextLength, searchDocumentsFn, mcpClient, isThinkingModel = false }) {
   const budget = Math.floor(contextLength * CONTEXT_BUDGET_RATIO);
   console.log(`[researchAgent] starting — budget: ${budget} tokens, query: "${query.slice(0, 80)}..."`);
 
@@ -102,9 +103,10 @@ export async function runResearchAgent({ query, model, contextLength, searchDocu
     while (true) {
       const stream = streamText({
         model,
-        system: RESEARCH_SYSTEM_PROMPT,
+        system: isThinkingModel ? `/no_think\n${RESEARCH_SYSTEM_PROMPT}` : RESEARCH_SYSTEM_PROMPT,
         messages: subMessages,
         tools: { ragSearch, webSearch },
+        experimental_telemetry: { isEnabled: true, tracer: getTracer() },
       });
 
       let currentText = "";

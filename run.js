@@ -1,6 +1,8 @@
 // run.js - Terminal-based chat app using Vercel AI SDK + LM Studio
 
 import "dotenv/config";
+import { Laminar, getTracer } from "@lmnr-ai/lmnr";
+Laminar.initialize({ projectApiKey: process.env.LMNR_PROJECT_API_KEY });
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { streamText } from "ai";
@@ -132,6 +134,7 @@ async function main() {
         system: SYSTEM_PROMPT,
         messages,
         tools: allTools,
+        experimental_telemetry: { isEnabled: true, tracer: getTracer() },
       });
 
       for await (const chunk of result.fullStream) {

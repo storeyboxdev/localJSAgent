@@ -341,6 +341,43 @@ body {
 }
 
 /* ============================================================
+   Agent event notification banner
+   ============================================================ */
+
+.agent-notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: #fef3c7;
+  border-bottom: 1px solid #f59e0b;
+  color: #78350f;
+  font-size: 0.85rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.agent-notification:hover {
+  background: #fde68a;
+}
+
+.agent-notification-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #92400e;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.agent-notification-close:hover {
+  color: #78350f;
+}
+
+/* ============================================================
    Chat input
    ============================================================ */
 
@@ -947,4 +984,45 @@ body {
 
 .tool-checkbox input {
   cursor: pointer;
+}
+
+/* ============================================================
+   Think bubble
+   ============================================================ */
+
+.think-bubble {
+  margin-bottom: 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 0.8rem;
+  color: #64748b;
+  overflow: hidden;
+}
+
+.think-bubble summary {
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+  font-style: italic;
+  user-select: none;
+  list-style: none;
+}
+
+.think-bubble summary::before {
+  content: "▶ ";
+  font-style: normal;
+  font-size: 0.65rem;
+}
+
+.think-bubble[open] summary::before {
+  content: "▼ ";
+}
+
+.think-content {
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid #e2e8f0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  line-height: 1.5;
 }
