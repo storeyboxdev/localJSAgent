@@ -1,0 +1,90 @@
+{
+  "name": "Tool Selection — Core Coverage",
+  "systemPrompt": "You are a helpful personal assistant. You have access to tools for file operations, calendar management, and date/time queries. Use the most appropriate tool when needed.",
+  "cases": [
+    {
+      "id": "datetime-current-time",
+      "description": "Current time query → dateTime",
+      "messages": [{ "role": "user", "content": "What time is it right now?" }],
+      "expect": { "toolCalls": ["dateTime"] }
+    },
+    {
+      "id": "datetime-today-date",
+      "description": "Today's date query → dateTime",
+      "messages": [{ "role": "user", "content": "What is today's date?" }],
+      "expect": { "toolCalls": ["dateTime"] }
+    },
+    {
+      "id": "datetime-not-file",
+      "description": "Timestamp query → dateTime, not a file tool",
+      "messages": [{ "role": "user", "content": "Quick, what's the current timestamp?" }],
+      "expect": { "toolCalls": ["dateTime"] }
+    },
+    {
+      "id": "file-read-request",
+      "description": "Explicit read file request → readFile",
+      "messages": [{ "role": "user", "content": "Read the file at /home/user/notes.txt" }],
+      "expect": { "toolCalls": ["readFile"] }
+    },
+    {
+      "id": "file-write-request",
+      "description": "Save content to file → writeFile",
+      "messages": [{ "role": "user", "content": "Save this to shopping.txt: milk, eggs, bread" }],
+      "expect": { "toolCalls": ["writeFile"] }
+    },
+    {
+      "id": "file-delete-request",
+      "description": "Delete a file → deleteFile",
+      "messages": [{ "role": "user", "content": "Delete the file temp_notes.txt" }],
+      "expect": { "toolCalls": ["deleteFile"] }
+    },
+    {
+      "id": "dir-list-files",
+      "description": "List directory contents → listFiles",
+      "messages": [{ "role": "user", "content": "What files are in my Documents folder?" }],
+      "expect": { "toolCalls": ["listFiles"] }
+    },
+    {
+      "id": "dir-current-directory",
+      "description": "Query current working directory → currentDirectory",
+      "messages": [{ "role": "user", "content": "What is the current working directory?" }],
+      "expect": { "toolCalls": ["currentDirectory"] }
+    },
+    {
+      "id": "calendar-list-events",
+      "description": "Check calendar for the week → listEvents",
+      "messages": [{ "role": "user", "content": "What's on my calendar this week?" }],
+      "expect": { "toolCalls": ["listEvents"] }
+    },
+    {
+      "id": "calendar-add-event",
+      "description": "Schedule a new appointment → addEvent",
+      "messages": [{ "role": "user", "content": "Schedule a dentist appointment for Friday at 2pm" }],
+      "expect": { "toolCalls": ["addEvent"] }
+    },
+    {
+      "id": "calendar-delete-event",
+      "description": "Cancel/delete a calendar event → deleteEvent",
+      "messages": [{ "role": "user", "content": "Cancel the event with ID abc123" }],
+      "expect": { "toolCalls": ["deleteEvent"] }
+    },
+    {
+      "id": "calendar-reschedule-ambiguous",
+      "description": "Reschedule requires lookup or edit → anyOf listEvents, editEvent",
+      "messages": [{ "role": "user", "content": "Move my 3pm meeting tomorrow to 4pm" }],
+      "expect": { "anyOf": ["listEvents", "editEvent"] }
+    },
+    {
+      "id": "no-tool-simple-math",
+      "description": "Simple arithmetic — no tool needed",
+      "messages": [{ "role": "user", "content": "What is 12 times 15?" }],
+      "expect": { "noToolCall": true }
+    },
+    {
+      "id": "no-tool-factual-question",
+      "description": "General knowledge question — no tool needed",
+      "messages": [{ "role": "user", "content": "Who wrote Pride and Prejudice?" }],
+      "expect": { "noToolCall": true }
+    }
+  ]
+}
