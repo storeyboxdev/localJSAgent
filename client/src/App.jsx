@@ -1,5 +1,138 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import * as alphaTab from "@coderline/alphatab";
+import abcjs from "abcjs";
 import "./App.css";
+
+// ---------------------------------------------------------------------------
+// Tab rendering helpers
+// ---------------------------------------------------------------------------
+function parseMessageSegments(text) {
+  const segments = [];
+  const fenceRe = /```(alphatab|abc)\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = fenceRe.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push(...splitPlainText(text.slice(lastIndex, match.index)));
+    }
+    const lang = match[1];
+    const content = match[2];
+    if (lang === "alphatab") {
+      const titleMatch = content.match(/\\title\s+"([^"]+)"/);
+      segments.push({ type: "alphatab", content, title: titleMatch?.[1] ?? null });
+    } else {
+      const titleMatch = content.match(/^T:(.+)$/m);
+      segments.push({ type: "abc", content, title: titleMatch?.[1]?.trim() ?? null });
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    segments.push(...splitPlainText(text.slice(lastIndex)));
+  }
+
+  return segments;
+}
+
+function splitPlainText(text) {
+  // Detect ASCII tab blocks: 3+ consecutive lines starting with a string letter + |
+  const lines = text.split("\n");
+  const segments = [];
+  let plainStart = 0;
+  let i = 0;
+
+  while (i < lines.length) {
+    if (/^[eEBbGgDdAa]\|/.test(lines[i])) {
+      let j = i;
+      while (j < lines.length && /^[eEBbGgDdAa]\|/.test(lines[j])) j++;
+      if (j - i >= 3) {
+        // Flush preceding plain text
+        if (i > plainStart) {
+          const before = lines.slice(plainStart, i).join("\n");
+          if (before) segments.push({ type: "text", content: before + "\n" });
+        }
+        segments.push({ type: "ascii-tab", content: lines.slice(i, j).join("\n") });
+        plainStart = j;
+        i = j;
+        continue;
+      }
+    }
+    i++;
+  }
+
+  // Remaining plain text
+  if (plainStart < lines.length) {
+    const remaining = lines.slice(plainStart).join("\n");
+    if (remaining) segments.push({ type: "text", content: remaining });
+  }
+
+  return segments;
+}
+
+function AlphaTabRenderer({ notation }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!ref.current || !notation) return;
+    const api = new alphaTab.AlphaTabApi(ref.current, {
+      core: { tex: true, workerFile: "/alphaTab.worker.mjs", fontDirectory: "/font/" },
+      player: { enablePlayer: false },
+      display: { scale: 0.9 },
+    });
+    api.tex(notation);
+    return () => {
+      try { api.destroy(); } catch (_) {}
+    };
+  }, [notation]);
+
+  return <div ref={ref} className="tab-alphatab" />;
+}
+
+function AbcjsRenderer({ notation }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!ref.current || !notation) return;
+    abcjs.renderAbc(ref.current, notation, {
+      responsive: "resize",
+      add_classes: true,
+      paddingright: 0,
+      paddingleft: 0,
+    });
+  }, [notation]);
+
+  return <div ref={ref} className="tab-abc" />;
+}
+
+function MessageRenderer({ text, suppressAlphaTab = false }) {
+  const segments = parseMessageSegments(text);
+  return (
+    <div className="message-text">
+      {segments.map((seg, i) => {
+        if (seg.type === "alphatab") {
+          if (suppressAlphaTab) return null;
+          return (
+            <div key={i} className="tab-alphatab-wrapper">
+              <AlphaTabRenderer notation={seg.content} />
+            </div>
+          );
+        }
+        if (seg.type === "abc") {
+          return (
+            <div key={i} className="tab-abc-wrapper">
+              <AbcjsRenderer notation={seg.content} />
+            </div>
+          );
+        }
+        if (seg.type === "ascii-tab") {
+          return <pre key={i} className="tab-ascii">{seg.content}</pre>;
+        }
+        return <span key={i} className="text-segment">{seg.content}</span>;
+      })}
+    </div>
+  );
+}
 
 // All assignable tools grouped by category
 const TOOL_GROUPS = [
@@ -543,7 +676,7 @@ function KnowledgeBasePanel({ onClose, activeAgentId, activeAgent }) {
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".txt,.md,.js,.ts,.jsx,.tsx,.py,.json,.csv,.html,.htm,.pdf,.docx"
+            accept=".txt,.md,.js,.ts,.jsx,.tsx,.py,.json,.csv,.html,.htm,.pdf,.docx,.abc,.tab,.ly,.cho,.chordpro,.musicxml"
             style={{ display: "none" }}
             onChange={(e) => uploadFiles(Array.from(e.target.files))}
           />
@@ -558,7 +691,7 @@ function KnowledgeBasePanel({ onClose, activeAgentId, activeAgent }) {
                 </span>
               )}
               {!agentScoped && (
-                <span className="drop-zone-hint">Supported: text, code, PDF, DOCX</span>
+                <span className="drop-zone-hint">Supported: text, code, PDF, DOCX, ABC, ChordPro, MusicXML, guitar tab</span>
               )}
             </>
           )}
@@ -862,6 +995,13 @@ function App() {
                 };
                 return updated;
               });
+            } else if (eventType === "render-tab") {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                updated[updated.length - 1] = { ...last, tab: data };
+                return updated;
+              });
             } else if (eventType === "done") {
               apiMessagesRef.current = data.messages;
               if (data.tokenCount !== undefined) setTokenCount(data.tokenCount);
@@ -1026,7 +1166,12 @@ function App() {
                   <div className="think-content">{msg.think}</div>
                 </details>
               )}
-              <div className="message-text">{msg.text}</div>
+              {msg.tab && (
+                <div className="tab-alphatab-wrapper">
+                  <AlphaTabRenderer notation={msg.tab.alphaTex} />
+                </div>
+              )}
+              <MessageRenderer text={msg.text} suppressAlphaTab={!!msg.tab} />
             </div>
           ))}
           {isLoading && messages[messages.length - 1]?.text === "" && (

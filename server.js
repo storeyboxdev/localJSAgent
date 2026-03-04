@@ -101,6 +101,7 @@ function noThink(prompt) {
 const model = provider(loadedLlm.id);
 console.log(`Model: ${loadedLlm.id} (context: ${contextLength})`);
 
+
 // LMStudio SDK — for countTokens() (requires WebSocket SDK API enabled in LM Studio)
 const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(
   /\/v1\/?$/,
@@ -496,7 +497,7 @@ app.post("/api/chat", async (req, res) => {
 
       const result = streamText({
         model,
-        system: systemPrompt,
+        system: noThink(systemPrompt),
         messages: chatMessages,
         tools: activeTools,
         experimental_telemetry: { isEnabled: true, tracer: getTracer() },
@@ -535,6 +536,9 @@ app.post("/api/chat", async (req, res) => {
           console.log(`[tool-result] keys:`, Object.keys(chunk));
           const raw = JSON.stringify(chunk);
           console.log(`[tool-result] preview:`, raw.slice(0, 500));
+          if (chunk.toolName === "renderTab" && chunk.output?.alphaTex) {
+            send("render-tab", { alphaTex: chunk.output.alphaTex, title: chunk.output.title });
+          }
         } else if (chunk.type === "error") {
           console.error("[stream-error]", chunk.error);
         }

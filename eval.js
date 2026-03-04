@@ -114,6 +114,78 @@ try {
   };
 }
 
+// Gmail tools — may fail when OAuth creds are absent; fall back to stubs
+let gmailTools = {};
+let gmailLoaded = false;
+try {
+  const gm = await import("./tools/gmail.js");
+  gmailTools = {
+    searchEmails:  gm.searchEmails,
+    readEmail:     gm.readEmail,
+    sendEmail:     gm.sendEmail,
+    replyToEmail:  gm.replyToEmail,
+    forwardEmail:  gm.forwardEmail,
+    trashEmail:    gm.trashEmail,
+    archiveEmail:  gm.archiveEmail,
+    markAsRead:    gm.markAsRead,
+  };
+  gmailLoaded = true;
+} catch {
+  const mk = (desc, schema) => tool({ description: desc, inputSchema: schema, execute: async () => ({}) });
+  gmailTools = {
+    searchEmails: mk(
+      "Search your Gmail inbox using Gmail search syntax. Returns a list of messages with id, threadId, subject, from, date, and snippet.",
+      z.object({
+        q:          z.string().describe("Gmail search query (e.g. \"from:bob is:unread\", \"subject:invoice\")"),
+        maxResults: z.number().default(10).describe("Maximum number of results to return"),
+      })
+    ),
+    readEmail: mk(
+      "Read the full content of an email by its messageId. Returns subject, from, to, date, and body.",
+      z.object({ messageId: z.string().describe("The Gmail message ID to read") })
+    ),
+    sendEmail: mk(
+      "Compose and send a new email. Requires to, subject, and body.",
+      z.object({
+        to:      z.string().describe("Recipient email address"),
+        subject: z.string().describe("Email subject line"),
+        body:    z.string().describe("Email body (plain text)"),
+        cc:      z.string().optional().describe("CC recipients"),
+      })
+    ),
+    replyToEmail: mk(
+      "Reply to an existing email thread by messageId.",
+      z.object({
+        messageId: z.string().describe("The Gmail message ID to reply to"),
+        body:      z.string().describe("Reply text"),
+      })
+    ),
+    forwardEmail: mk(
+      "Forward an email to a new recipient. Optionally prepend a note.",
+      z.object({
+        messageId: z.string().describe("The Gmail message ID to forward"),
+        to:        z.string().describe("Recipient to forward to"),
+        note:      z.string().optional().describe("Optional note to prepend"),
+      })
+    ),
+    trashEmail: mk(
+      "Move an email to the trash by its messageId.",
+      z.object({ messageId: z.string().describe("The Gmail message ID to trash") })
+    ),
+    archiveEmail: mk(
+      "Archive an email (remove from inbox) by its messageId.",
+      z.object({ messageId: z.string().describe("The Gmail message ID to archive") })
+    ),
+    markAsRead: mk(
+      "Mark an email as read or unread.",
+      z.object({
+        messageId: z.string().describe("The Gmail message ID"),
+        read:      z.boolean().describe("true to mark as read, false to mark as unread"),
+      })
+    ),
+  };
+}
+
 const ALL_TOOLS = {
   dateTime:         stripExecute(dateTime),
   readFile:         stripExecute(readFile),
@@ -124,6 +196,9 @@ const ALL_TOOLS = {
   currentDirectory: stripExecute(currentDirectory),
   ...Object.fromEntries(
     Object.entries(calendarTools).map(([k, v]) => [k, stripExecute(v)])
+  ),
+  ...Object.fromEntries(
+    Object.entries(gmailTools).map(([k, v]) => [k, stripExecute(v)])
   ),
 };
 
@@ -232,6 +307,7 @@ function pad(s, n) { return String(s).padEnd(n); }
 async function runSuite(suite, model, modelId) {
   console.log(`\n  Model: ${C.bold(modelId)}`);
   if (!calendarLoaded) console.log(C.dim("  (calendar tools: stubs — Google creds not found)"));
+  if (!gmailLoaded) console.log(C.dim("  (gmail tools: stubs — OAuth creds not found)"));
   console.log("  " + "─".repeat(72));
 
   const caseResults = [];

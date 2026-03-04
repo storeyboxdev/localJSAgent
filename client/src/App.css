@@ -227,7 +227,6 @@ body {
   max-width: 80%;
   padding: 0.75rem 1rem;
   border-radius: 12px;
-  white-space: pre-wrap;
   word-wrap: break-word;
 }
 
@@ -1025,4 +1024,57 @@ body {
   word-wrap: break-word;
   font-family: inherit;
   line-height: 1.5;
+}
+
+/* ============================================================
+   Tablature rendering
+   ============================================================ */
+
+/* Plain text spans in MessageRenderer */
+.text-segment {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* ASCII tablature block */
+.tab-ascii {
+  font-family: 'Courier New', Consolas, monospace;
+  background: #1e293b;
+  color: #94a3b8;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.8;
+  white-space: pre;
+}
+
+/* alphaTab visual notation wrapper */
+.tab-alphatab-wrapper {
+  margin: 0.5rem 0;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  overflow: hidden;
+  min-height: 80px;
+}
+
+.tab-alphatab {
+  padding: 0.5rem;
+}
+
+/* Standard notation (abcjs) wrapper */
+.tab-abc-wrapper {
+  margin: 0.5rem 0;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem 1rem;
+  overflow: hidden;
+}
+
+.tab-abc svg {
+  max-width: 100%;
+  height: auto;
 }

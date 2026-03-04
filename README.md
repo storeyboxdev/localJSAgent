@@ -8,7 +8,7 @@ Inspired by Scott Moss' Frontend Masters course — built to run locally without
 
 - **Streaming chat** — SSE-based streaming with live token usage and context-window progress bar
 - **Think bubbles** — collapsible reasoning blocks for thinking models (Qwen3, DeepSeek-R1, QwQ); stream live as they arrive
-- **Tool calling** — file ops, directory navigation, Google Calendar, web search (Tavily MCP), RAG search, research sub-agent
+- **Tool calling** — file ops, directory navigation, Google Calendar, Gmail, web search (Tavily MCP), RAG search, research sub-agent, guitar notation tools
 - **Context compaction** — auto-compacts at 80% context usage; manual compact button always available
 - **Agent archetypes** — reusable prompt templates with variable substitution (Interview Preparer, Tutor, Book Study Helper, Scheduler, Guitar Teacher, News Briefing)
 - **Agent instances** — persistent per-agent conversation history saved to disk; restored on reload
@@ -102,6 +102,9 @@ Tool Layer (tools/)
     ├── dateTime
     ├── Google Calendar: listCalendars, setActiveCalendar, listEvents,
     │                    addEvent, editEvent, deleteEvent
+    ├── Gmail: searchEmails, readEmail, sendEmail, replyToEmail,
+    │          forwardEmail, trashEmail, archiveEmail, markAsRead
+    ├── Guitar notation: resolveScale, resolveChord, renderTab, renderScore
     ├── webSearch (Tavily MCP — factory)
     ├── ragSearch (Supabase hybrid search — factory)
     └── delegateResearch (research sub-agent — factory)
@@ -142,7 +145,7 @@ Archetypes are reusable prompt templates in `archetypes/*.json`. Create an insta
 | Tutor | Adaptive tutoring on any subject with recall testing |
 | Book Study Helper | Deep reading companion for a specific book |
 | Scheduler | Calendar-focused assistant for planning and scheduling |
-| Guitar Teacher | Guided lessons from beginner to advanced |
+| Guitar Teacher | Guided lessons from beginner to advanced — deterministic chord/scale tab rendering via server-side SSE injection |
 | News Briefing | Scheduled web-search agent that delivers daily digests |
 
 ### Creating archetypes
@@ -302,7 +305,7 @@ embed.js              Knowledge base indexing CLI
 system-prompt.txt     Main assistant system prompt ({{DATE}} placeholder)
 personal.txt          User personal info referenced by system prompt
 
-tools/                Tool definitions (Vercel AI SDK + Zod)
+tools/                Tool definitions (Vercel AI SDK + Zod) — includes gmail.js, guitarTheory.js, renderTab.js, renderScore.js, resolveScale.js, resolveChord.js
 agents/               Research sub-agent + delegate tool
 monitors/             Calendar + news background monitors
 lib/                  RAG, embeddings, chunking, reranker, agentStore, Supabase client
