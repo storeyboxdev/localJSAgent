@@ -141,6 +141,9 @@ const TOOL_GROUPS = [
   { label: "Web", tools: ["webSearch"] },
   { label: "Knowledge Base", tools: ["ragSearch", "delegateResearch"] },
   { label: "Calendar", tools: ["listCalendars", "setActiveCalendar", "listEvents", "addEvent", "editEvent", "deleteEvent"] },
+  { label: "Tasks", tools: ["createTask", "listTasks", "updateTask", "completeTask", "deleteTask"] },
+  { label: "Email", tools: ["searchEmails", "readEmail", "sendEmail", "replyToEmail", "forwardEmail", "trashEmail", "archiveEmail", "markAsRead"] },
+  { label: "Guitar", tools: ["renderTab", "renderScore", "resolveScale", "resolveChord"] },
 ];
 
 const ICON_OPTIONS = ["🤖", "✨", "📚", "🎯", "💼", "🔬", "🎨", "🗓️", "🔍", "📝", "🎓", "💡"];
@@ -246,6 +249,13 @@ function NewAgentModal({ onClose, onCreated }) {
               setConverseMessages((prev) => {
                 const updated = [...prev];
                 updated[updated.length - 1] = { role: "assistant", content: accumulated };
+                return updated;
+              });
+            } else if (eventType === "error") {
+              const errMsg = data.error ?? "An error occurred";
+              setConverseMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: "assistant", content: `⚠️ ${errMsg}` };
                 return updated;
               });
             }

@@ -12,6 +12,7 @@ export { renderTab } from "./renderTab.js";
 export { renderScore } from "./renderScore.js";
 export { resolveScale } from "./resolveScale.js";
 export { resolveChord } from "./resolveChord.js";
+export { createTask, listTasks, updateTask, completeTask, deleteTask } from "./taskManager.js";
 
 import { dateTime } from "./dateTime.js";
 import { readFile } from "./readFile.js";
@@ -26,6 +27,7 @@ import { renderTab } from "./renderTab.js";
 import { renderScore } from "./renderScore.js";
 import { resolveScale } from "./resolveScale.js";
 import { resolveChord } from "./resolveChord.js";
+import { createTask, listTasks, updateTask, completeTask, deleteTask } from "./taskManager.js";
 
 export const tools = {
   dateTime,
@@ -53,4 +55,9 @@ export const tools = {
   renderScore,
   resolveScale,
   resolveChord,
+  createTask,
+  listTasks,
+  updateTask,
+  completeTask,
+  deleteTask,
 };

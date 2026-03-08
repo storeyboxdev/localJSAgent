@@ -125,7 +125,7 @@ try {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 // Multer — memory storage for document uploads (no temp files)
 const upload = multer({
@@ -156,7 +156,15 @@ Ask focused questions (one at a time, maximum 2 follow-ups) to understand:
 2. Whether it should search the web or the user's knowledge base
 3. Any specific persona, tone, or constraints
 
-Available tools you can assign: dateTime, readFile, writeFile, deleteFile, listFiles, changeDirectory, currentDirectory, listCalendars, setActiveCalendar, listEvents, addEvent, editEvent, deleteEvent, webSearch, ragSearch, delegateResearch.
+Available tools you can assign:
+- General: dateTime
+- Files: readFile, writeFile, deleteFile, listFiles, changeDirectory, currentDirectory
+- Web: webSearch
+- Knowledge Base: ragSearch, delegateResearch
+- Calendar: listCalendars, setActiveCalendar, listEvents, addEvent, editEvent, deleteEvent
+- Tasks: createTask, listTasks, updateTask, completeTask, deleteTask
+- Email: searchEmails, readEmail, sendEmail, replyToEmail, forwardEmail, trashEmail, archiveEmail, markAsRead
+- Guitar: renderTab, renderScore, resolveScale, resolveChord
 
 When you have enough information (after 1-3 exchanges), end your message with a JSON block in this exact format — do not omit it:
 
@@ -489,8 +497,17 @@ app.post("/api/chat", async (req, res) => {
   try {
     // Tool execution loop (capped to prevent runaway)
     const MAX_TOOL_ROUNDS = 3;
+    const MAX_RAG_ROUNDS = 10;
     let toolRound = 0;
+    let ragRound = 0;
     while (true) {
+      if (toolRound === MAX_TOOL_ROUNDS - 1) {
+        chatMessages.push({
+          role: "user",
+          content: "[You have reached your final tool call. After this, write your complete response without calling any more tools.]",
+        });
+      }
+
       let insideTag = null;
       let buffer = "";
       const toolCalls = [];
@@ -553,9 +570,18 @@ app.post("/api/chat", async (req, res) => {
       chatMessages.push(...response.messages);
 
       if (toolCalls.length === 0) break;
-      if (++toolRound >= MAX_TOOL_ROUNDS) {
-        send("text", { text: "\n[max tool rounds reached]" });
-        break;
+      const RAG_TOOLS = ["ragSearch", "delegateResearch"];
+      const hasNonRagCall = toolCalls.some((tc) => !RAG_TOOLS.includes(tc.toolName));
+      if (hasNonRagCall) {
+        if (++toolRound >= MAX_TOOL_ROUNDS) {
+          send("text", { text: "\n[max tool rounds reached]" });
+          break;
+        }
+      } else {
+        if (++ragRound >= MAX_RAG_ROUNDS) {
+          send("text", { text: "\n[max rag rounds reached]" });
+          break;
+        }
       }
     }
 

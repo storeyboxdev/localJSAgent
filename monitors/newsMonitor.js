@@ -2,7 +2,8 @@ import "dotenv/config";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateText } from "ai";
+import { streamText, tool } from "ai";
+import { z } from "zod";
 import { getTracer } from "@lmnr-ai/lmnr";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,51 +42,89 @@ export function shouldRunNow(variables, lastRunDate) {
   return diff >= 0 && diff < SCHEDULE_WINDOW_MS;
 }
 
-async function rawSearch(mcpClient, query) {
-  const result = await mcpClient.callTool({ name: "tavily_search", args: { query } });
-  const rawText = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-  let data;
-  try { data = JSON.parse(rawText); } catch { return rawText; }
-  const parts = [];
-  if (data.answer) parts.push(`Answer: ${data.answer}`);
-  for (const r of (data.results ?? []).slice(0, 5)) {
-    parts.push(`\n[${r.title}](${r.url})`);
-    if (r.content) parts.push(r.content);
-  }
-  return parts.length > 0 ? parts.join("\n") : rawText;
-}
-
 async function runBriefing(agentId, { model, mcpClient, getAgentFn, saveAgentMessagesFn, noThinkFn, handlers, state }) {
   console.log(`[newsMonitor] running briefing for agent ${agentId}`);
   const instance = getAgentFn(agentId);
   if (!instance) { console.warn(`[newsMonitor] agent ${agentId} not found`); return; }
 
-  const topic = instance.variables?.TOPIC ?? "general news";
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 
-  let searchResults = "Web search unavailable at this time.";
-  try {
-    searchResults = await rawSearch(mcpClient, `${topic} news ${new Date().toISOString().slice(0, 10)}`);
-  } catch (err) {
-    console.error(`[newsMonitor] search error for ${agentId}:`, err.message);
-  }
+  const webSearch = tool({
+    description: "Search the web for current news and information.",
+    inputSchema: z.object({ query: z.string().describe("The search query") }),
+    execute: async ({ query: q }) => {
+      console.log(`[newsMonitor:webSearch] query: "${q}"`);
+      try {
+        const result = await mcpClient.callTool({ name: "tavily_search", args: { query: q } });
+        const rawText = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+        let data;
+        try { data = JSON.parse(rawText); } catch { return rawText; }
+        const parts = [];
+        if (data.answer) parts.push(`Answer: ${data.answer}`);
+        if (data.results?.length > 0) {
+          parts.push("Search results:");
+          for (const r of data.results.slice(0, 5)) {
+            parts.push(`\n[${r.title}](${r.url})`);
+            if (r.content) parts.push(r.content);
+          }
+        }
+        return parts.length > 0 ? parts.join("\n") : rawText;
+      } catch (err) {
+        console.error("[newsMonitor:webSearch] error:", err);
+        return `Web search failed: ${err.message}`;
+      }
+    },
+  });
 
+  const MAX_TOOL_ROUNDS = 12;
+  const briefingMessages = [
+    { role: "user", content: `Run your scheduled news briefing for today, ${today}.` },
+  ];
   let briefingText = "";
+  let toolRound = 0;
+
   try {
-    const result = await generateText({
-      model,
-      system: noThinkFn("You are a concise news summarizer. Respond only with the formatted briefing."),
-      experimental_telemetry: { isEnabled: true, tracer: getTracer() },
-      messages: [{
-        role: "user",
-        content: `Today is ${today}. Prepare a news briefing on "${topic}".\n\nStructure:\n1. Overview (1-2 sentences)\n2. Key Stories (3-5 items with headline + 2-3 sentence summary + source URL)\n3. What to Watch (1-2 sentences)\n\nKeep it under 500 words.\n\n---\n${searchResults}\n---`,
-      }],
-    });
-    briefingText = result.text.trim();
+    while (true) {
+      if (toolRound === MAX_TOOL_ROUNDS - 1) {
+        briefingMessages.push({
+          role: "user",
+          content: "[You have reached your final tool call. After this, write your complete briefing without calling any more tools.]",
+        });
+      }
+
+      const stream = streamText({
+        model,
+        system: noThinkFn(instance.resolvedSystemPrompt ?? "You are a news briefing assistant."),
+        messages: briefingMessages,
+        tools: { webSearch },
+        experimental_telemetry: { isEnabled: true, tracer: getTracer() },
+      });
+
+      let currentText = "";
+      const toolCalls = [];
+
+      for await (const chunk of stream.fullStream) {
+        if (chunk.type === "text-delta") {
+          currentText += chunk.text;
+        } else if (chunk.type === "tool-call") {
+          toolCalls.push(chunk);
+          console.log(`[newsMonitor:tool-call] ${chunk.toolName}("${chunk.args?.query}")`);
+        }
+      }
+
+      const clean = currentText.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      if (clean) briefingText = clean;
+
+      const response = await stream.response;
+      briefingMessages.push(...response.messages);
+
+      if (toolCalls.length === 0) break;
+      if (++toolRound >= MAX_TOOL_ROUNDS) break;
+    }
   } catch (err) {
-    console.error(`[newsMonitor] generateText error for ${agentId}:`, err.message);
+    console.error(`[newsMonitor] loop error for ${agentId}:`, err.message);
     return;
   }
 

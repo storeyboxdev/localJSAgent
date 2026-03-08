@@ -101,6 +101,13 @@ export async function runResearchAgent({ query, model, contextLength, searchDocu
 
   try {
     while (true) {
+      if (toolRound === MAX_TOOL_ROUNDS - 1) {
+        subMessages.push({
+          role: "user",
+          content: "[You have reached your final tool call. After this, write your complete response without calling any more tools.]",
+        });
+      }
+
       const stream = streamText({
         model,
         system: isThinkingModel ? `/no_think\n${RESEARCH_SYSTEM_PROMPT}` : RESEARCH_SYSTEM_PROMPT,
