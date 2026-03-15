@@ -737,6 +737,7 @@ app.post("/api/compact", async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/documents", async (req, res) => {
+  if (!supabase) return res.json([]);
   try {
     let docQuery = supabase
       .from("documents")
@@ -774,6 +775,7 @@ app.get("/api/documents", async (req, res) => {
 });
 
 app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: "Knowledge base not configured (SUPABASE_URL missing)" });
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: "No files uploaded" });
   }
@@ -861,6 +863,7 @@ app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
 });
 
 app.delete("/api/documents/:id", async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: "Knowledge base not configured" });
   try {
     // Chunks are deleted by cascade (FK constraint) in Supabase
     const { error } = await supabase
