@@ -13,6 +13,7 @@ export { renderScore } from "./renderScore.js";
 export { resolveScale } from "./resolveScale.js";
 export { resolveChord } from "./resolveChord.js";
 export { createTask, listTasks, updateTask, completeTask, deleteTask } from "./taskManager.js";
+export { listMidiTracks, extractMidiTrack } from "./midi.js";
 
 import { dateTime } from "./dateTime.js";
 import { readFile } from "./readFile.js";
@@ -28,6 +29,7 @@ import { renderScore } from "./renderScore.js";
 import { resolveScale } from "./resolveScale.js";
 import { resolveChord } from "./resolveChord.js";
 import { createTask, listTasks, updateTask, completeTask, deleteTask } from "./taskManager.js";
+import { listMidiTracks, extractMidiTrack } from "./midi.js";
 
 export const tools = {
   dateTime,
@@ -60,4 +62,6 @@ export const tools = {
   updateTask,
   completeTask,
   deleteTask,
+  listMidiTracks,
+  extractMidiTrack,
 };
