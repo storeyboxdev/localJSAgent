@@ -45,6 +45,7 @@
   "build": {
     "appId": "com.localai.assistant",
     "productName": "LocalAI",
+    "asar": false,
     "directories": {
       "output": "releases"
     },
@@ -58,15 +59,13 @@
       "archetypes/**",
       "client/dist/**",
       "node_modules/**",
-      "package.json"
-    ],
-    "extraResources": [
-      { "from": "system-prompt.txt", "to": "system-prompt.txt" },
-      { "from": "personal.txt", "to": "personal.txt" }
+      "package.json",
+      "system-prompt.txt",
+      "personal.txt"
     ],
     "publish": {
       "provider": "generic",
-      "url": "http://192.168.1.91:3000/releases/"
+      "url": "http://192.168.1.91:3001/releases/"
     },
     "win": {
       "target": "nsis"

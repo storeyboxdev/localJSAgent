@@ -744,7 +744,7 @@ function SettingsPanel({ onClose }) {
                 className="settings-input"
                 value={config.updateServerURL || ""}
                 onChange={(e) => setConfig((c) => ({ ...c, updateServerURL: e.target.value }))}
-                placeholder="http://192.168.1.91:3000/releases/"
+                placeholder="http://192.168.1.91:3001/releases/"
               />
               <p className="settings-note">
                 Defaults to 192.168.1.91 (reserved server IP). Change this if you host the

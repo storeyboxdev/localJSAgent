@@ -1,8 +1,11 @@
 import { app, BrowserWindow, ipcMain, shell, utilityProcess } from "electron";
-import { autoUpdater } from "electron-updater";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, URL } from "url";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const { autoUpdater } = require("electron-updater");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -16,8 +19,8 @@ const DEFAULT_CONFIG = {
   baseURL: "http://localhost:1234/v1",
   apiKey: "",
   model: "",
-  port: 3000,
-  updateServerURL: "http://192.168.1.91:3000/releases/",
+  port: 3001,
+  updateServerURL: "http://192.168.1.91:3001/releases/",
 };
 
 function loadConfig() {
