@@ -61,7 +61,9 @@
       "node_modules/**",
       "package.json",
       "system-prompt.txt",
-      "personal.txt"
+      "personal.txt",
+      "creds/**",
+      ".env"
     ],
     "publish": {
       "provider": "generic",
