@@ -227,7 +227,7 @@ function notesToAbc(notes, bpm, header, title, warnings) {
 export const listMidiTracks = tool({
   description:
     "Read a .mid file and return its tracks with instrument names, note counts, pitch ranges, and guitarPlayable flags. Use this first to inspect a MIDI file before extracting a track.",
-  parameters: z.object({
+  inputSchema: z.object({
     path: z.string().describe("Path to the .mid file (absolute or relative to cwd)"),
   }),
   execute: async ({ path: filePath }) => {
@@ -285,7 +285,7 @@ export const listMidiTracks = tool({
 export const extractMidiTrack = tool({
   description:
     "Extract a specific track from a .mid file and convert it to guitar tab (alphaTex) and/or sheet music (ABC notation). Use listMidiTracks first to identify the track index.",
-  parameters: z.object({
+  inputSchema: z.object({
     path: z.string().describe("Path to the .mid file"),
     trackIndex: z.number().int().min(0).describe("Zero-based track index from listMidiTracks"),
     format: z
