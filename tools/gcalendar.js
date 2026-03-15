@@ -1,24 +1,48 @@
 import { google } from "googleapis";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tool } from "ai";
 import { z } from "zod";
-import keys from "../creds/google.json" with { type: "json" };
-import calendarConfig from "../creds/calendar-config.json" with { type: "json" };
 
-const SCOPES = ["https://www.googleapis.com/auth/calendar"];
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const googleKeyPath = join(__dirname, "../creds/google.json");
+const calendarConfigPath = join(__dirname, "../creds/calendar-config.json");
 
-const auth = new google.auth.JWT({
-  email: keys.client_email,
-  key: keys.private_key,
-  scopes: SCOPES,
-});
+let calendar = null;
+let activeCalendar = "primary";
+let TIMEZONE = "UTC";
 
-await auth.authorize();
-console.log("Google Calendar: connected with service account");
+if (existsSync(googleKeyPath) && existsSync(calendarConfigPath)) {
+  const keys = JSON.parse(readFileSync(googleKeyPath, "utf-8"));
+  const calendarConfig = JSON.parse(readFileSync(calendarConfigPath, "utf-8"));
 
-const calendar = google.calendar({ version: "v3", auth });
+  activeCalendar = calendarConfig.activeCalendar;
+  TIMEZONE = calendarConfig.timezone;
 
-let activeCalendar = calendarConfig.activeCalendar;
-const TIMEZONE = calendarConfig.timezone;
+  const auth = new google.auth.JWT({
+    email: keys.client_email,
+    key: keys.private_key,
+    scopes: ["https://www.googleapis.com/auth/calendar"],
+  });
+
+  await auth.authorize();
+  console.log("Google Calendar: connected with service account");
+
+  calendar = google.calendar({ version: "v3", auth });
+
+  try {
+    await calendar.calendarList.insert({ requestBody: { id: activeCalendar } });
+  } catch (e) {
+    if (e.code !== 409) console.warn("Could not subscribe to calendar:", e.message);
+  }
+} else {
+  console.warn("[gcalendar] creds/google.json or creds/calendar-config.json not found — calendar tools disabled");
+}
+
+function requireCalendar() {
+  if (!calendar) throw new Error("Google Calendar not configured. Add creds/google.json and creds/calendar-config.json.");
+}
 
 function resolveCalendarId(calendarId) {
   return !calendarId || calendarId === "primary" ? activeCalendar : calendarId;
@@ -36,20 +60,12 @@ function normalizeRecurrence(rules) {
   );
 }
 
-// Subscribe the service account to the user's calendar so calendarList.list() includes it
-try {
-  await calendar.calendarList.insert({ requestBody: { id: activeCalendar } });
-} catch (e) {
-  // 409 = already subscribed, which is fine
-  if (e.code !== 409)
-    console.warn("Could not subscribe to calendar:", e.message);
-}
-
 export const listCalendars = tool({
   description:
     "List all Google Calendars accessible by the service account. Shows calendar name, ID, and whether it is the currently active calendar.",
   inputSchema: z.object({}),
   execute: async () => {
+    requireCalendar();
     const res = await calendar.calendarList.list();
     const calendars = res.data.items || [];
     return calendars.map((c) => ({
@@ -71,6 +87,7 @@ export const setActiveCalendar = tool({
       .describe("The calendar ID to set as active (e.g. an email address)"),
   }),
   execute: async ({ calendarId }) => {
+    requireCalendar();
     try {
       await calendar.calendarList.insert({ requestBody: { id: calendarId } });
     } catch (e) {
@@ -101,6 +118,7 @@ export const listEvents = tool({
       .describe("ISO date string to filter events from (defaults to now)"),
   }),
   execute: async ({ calendarId, maxResults, timeMin }) => {
+    requireCalendar();
     const res = await calendar.events.list({
       calendarId: resolveCalendarId(calendarId),
       maxResults,
@@ -186,6 +204,7 @@ export function createAddEvent(agentId = null) {
       location,
       recurrence,
     }) => {
+      requireCalendar();
       const body = { summary, description, location };
       if (allDay || startDate) {
         body.start = { date: startDate };
@@ -269,6 +288,7 @@ export function createEditEvent(agentId = null) {
       location,
       recurrence,
     }) => {
+      requireCalendar();
       const body = {};
       if (summary !== undefined) body.summary = summary;
       if (description !== undefined) body.description = description;
@@ -313,6 +333,7 @@ export const deleteEvent = tool({
     eventId: z.string().describe("ID of the event to delete"),
   }),
   execute: async ({ calendarId, eventId }) => {
+    requireCalendar();
     await calendar.events.delete({
       calendarId: resolveCalendarId(calendarId),
       eventId,

@@ -983,11 +983,11 @@ async function start() {
   allTools = { ...tools, webSearch, ragSearch, delegateResearch };
 
   // Start background monitors
-  const calMonitor = createCalendarMonitor({
-    calendar,
-    calendarId: activeCalendar,
-  });
-  calMonitor.onEvent((event) => {
+  const calMonitor = calendar
+    ? createCalendarMonitor({ calendar, calendarId: activeCalendar })
+    : null;
+  if (!calMonitor) console.warn("[server] Calendar monitor disabled — no Google credentials");
+  calMonitor?.onEvent((event) => {
     console.log(
       `[monitor] calendar event: "${event.summary}" at ${event.start}`,
     );
@@ -1011,7 +1011,7 @@ async function start() {
   });
 
   registry = createMonitorRegistry();
-  registry.register("calendar", calMonitor);
+  if (calMonitor) registry.register("calendar", calMonitor);
   registry.register("news", newsMonitor);
   registry.startAll();
 

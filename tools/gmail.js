@@ -1,43 +1,55 @@
 import { google } from "googleapis";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tool } from "ai";
 import { z } from "zod";
 
 // ── Auth setup ────────────────────────────────────────────────────────────────
 
-const oauthCreds = JSON.parse(readFileSync("creds/gmail-oauth.json", "utf-8"));
-let storedTokens = JSON.parse(readFileSync("creds/gmail-token.json", "utf-8"));
-
-const { client_id, client_secret } = oauthCreds.installed ?? oauthCreds.web;
-const oauth2Client = new google.auth.OAuth2(
-  client_id,
-  client_secret,
-  "urn:ietf:wg:oauth:2.0:oob"
-);
-oauth2Client.setCredentials(storedTokens);
-
-// Persist refreshed access tokens automatically
-oauth2Client.on("tokens", (newTokens) => {
-  storedTokens = { ...storedTokens, ...newTokens };
-  writeFileSync("creds/gmail-token.json", JSON.stringify(storedTokens, null, 2));
-});
-
-const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-
-// Resolve authenticated user email once at startup
 let USER_EMAIL = null;
 let gmailReady = false;
-try {
-  const { data: profile } = await gmail.users.getProfile({ userId: "me" });
-  USER_EMAIL = profile.emailAddress;
-  gmailReady = true;
-  console.log(`Gmail: connected as ${USER_EMAIL}`);
-} catch (err) {
-  console.warn(`Gmail: auth failed (${err.message}) — run 'node gmail-reauth.js' to re-authorize`);
+
+const gmailCredsExist =
+  existsSync("creds/gmail-oauth.json") && existsSync("creds/gmail-token.json");
+
+if (!gmailCredsExist) {
+  console.warn("[gmail] creds/gmail-oauth.json or creds/gmail-token.json not found — Gmail tools disabled");
+}
+
+let gmail = null;
+let oauth2Client = null;
+
+if (gmailCredsExist) {
+  const oauthCreds = JSON.parse(readFileSync("creds/gmail-oauth.json", "utf-8"));
+  let storedTokens = JSON.parse(readFileSync("creds/gmail-token.json", "utf-8"));
+
+  const { client_id, client_secret } = oauthCreds.installed ?? oauthCreds.web;
+  oauth2Client = new google.auth.OAuth2(
+    client_id,
+    client_secret,
+    "urn:ietf:wg:oauth:2.0:oob"
+  );
+  oauth2Client.setCredentials(storedTokens);
+
+  // Persist refreshed access tokens automatically
+  oauth2Client.on("tokens", (newTokens) => {
+    storedTokens = { ...storedTokens, ...newTokens };
+    writeFileSync("creds/gmail-token.json", JSON.stringify(storedTokens, null, 2));
+  });
+
+  gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  try {
+    const { data: profile } = await gmail.users.getProfile({ userId: "me" });
+    USER_EMAIL = profile.emailAddress;
+    gmailReady = true;
+    console.log(`Gmail: connected as ${USER_EMAIL}`);
+  } catch (err) {
+    console.warn(`Gmail: auth failed (${err.message}) — run 'node gmail-reauth.js' to re-authorize`);
+  }
 }
 
 function requireGmailAuth() {
-  if (!gmailReady) throw new Error("Gmail not authenticated. Run 'node gmail-reauth.js' to re-authorize.");
+  if (!gmailReady) throw new Error("Gmail not configured. Add creds/gmail-oauth.json and creds/gmail-token.json, then run 'node gmail-reauth.js'.");
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
