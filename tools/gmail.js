@@ -25,9 +25,20 @@ oauth2Client.on("tokens", (newTokens) => {
 const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
 // Resolve authenticated user email once at startup
-const { data: profile } = await gmail.users.getProfile({ userId: "me" });
-const USER_EMAIL = profile.emailAddress;
-console.log(`Gmail: connected as ${USER_EMAIL}`);
+let USER_EMAIL = null;
+let gmailReady = false;
+try {
+  const { data: profile } = await gmail.users.getProfile({ userId: "me" });
+  USER_EMAIL = profile.emailAddress;
+  gmailReady = true;
+  console.log(`Gmail: connected as ${USER_EMAIL}`);
+} catch (err) {
+  console.warn(`Gmail: auth failed (${err.message}) — run 'node gmail-reauth.js' to re-authorize`);
+}
+
+function requireGmailAuth() {
+  if (!gmailReady) throw new Error("Gmail not authenticated. Run 'node gmail-reauth.js' to re-authorize.");
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -102,6 +113,7 @@ export const searchEmails = tool({
       .describe("Maximum number of results to return (default 10)"),
   }),
   execute: async ({ q, maxResults }) => {
+    requireGmailAuth();
     const res = await gmail.users.messages.list({
       userId: "me",
       q,
@@ -140,6 +152,7 @@ export const readEmail = tool({
     messageId: z.string().describe("The Gmail message ID to read"),
   }),
   execute: async ({ messageId }) => {
+    requireGmailAuth();
     const res = await gmail.users.messages.get({
       userId: "me",
       id: messageId,
@@ -168,6 +181,7 @@ export const sendEmail = tool({
     cc: z.string().optional().describe("CC recipients (comma-separated)"),
   }),
   execute: async ({ to, subject, body, cc }) => {
+    requireGmailAuth();
     const raw = buildRawEmail({ from: USER_EMAIL, to, cc, subject, body });
     const res = await gmail.users.messages.send({
       userId: "me",
@@ -187,6 +201,7 @@ export const replyToEmail = tool({
     body: z.string().describe("Your reply text (plain text)"),
   }),
   execute: async ({ messageId, body }) => {
+    requireGmailAuth();
     // Fetch original to get threading headers
     const orig = await gmail.users.messages.get({
       userId: "me",
@@ -236,6 +251,7 @@ export const forwardEmail = tool({
       .describe("Optional note to prepend before the forwarded body"),
   }),
   execute: async ({ messageId, to, note }) => {
+    requireGmailAuth();
     const orig = await gmail.users.messages.get({
       userId: "me",
       id: messageId,
@@ -277,6 +293,7 @@ export const trashEmail = tool({
     messageId: z.string().describe("The Gmail message ID to trash"),
   }),
   execute: async ({ messageId }) => {
+    requireGmailAuth();
     await gmail.users.messages.trash({ userId: "me", id: messageId });
     return { success: true, messageId };
   },
@@ -289,6 +306,7 @@ export const archiveEmail = tool({
     messageId: z.string().describe("The Gmail message ID to archive"),
   }),
   execute: async ({ messageId }) => {
+    requireGmailAuth();
     await gmail.users.messages.modify({
       userId: "me",
       id: messageId,
@@ -307,6 +325,7 @@ export const markAsRead = tool({
       .describe("true to mark as read, false to mark as unread"),
   }),
   execute: async ({ messageId, read }) => {
+    requireGmailAuth();
     await gmail.users.messages.modify({
       userId: "me",
       id: messageId,

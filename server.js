@@ -496,10 +496,8 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     // Tool execution loop (capped to prevent runaway)
-    const MAX_TOOL_ROUNDS = 3;
-    const MAX_RAG_ROUNDS = 10;
+    const MAX_TOOL_ROUNDS = 8;
     let toolRound = 0;
-    let ragRound = 0;
     while (true) {
       if (toolRound === MAX_TOOL_ROUNDS - 1) {
         chatMessages.push({
@@ -540,11 +538,15 @@ app.post("/api/chat", async (req, res) => {
           buffer = state.buffer;
           insideTag = state.insideTag;
         } else if (chunk.type === "tool-call") {
-          toolCalls.push(chunk);
           console.log(
             `[tool-call] FULL CHUNK:`,
             JSON.stringify(chunk, null, 2),
           );
+          if (chunk.invalid) {
+            console.warn(`[tool-call] invalid tool "${chunk.toolName}" — skipping`);
+            continue;
+          }
+          toolCalls.push(chunk);
           // Discard buffer on tool call — it likely contains leaked arg tags
           buffer = "";
           insideTag = null;
@@ -570,18 +572,9 @@ app.post("/api/chat", async (req, res) => {
       chatMessages.push(...response.messages);
 
       if (toolCalls.length === 0) break;
-      const RAG_TOOLS = ["ragSearch", "delegateResearch"];
-      const hasNonRagCall = toolCalls.some((tc) => !RAG_TOOLS.includes(tc.toolName));
-      if (hasNonRagCall) {
-        if (++toolRound >= MAX_TOOL_ROUNDS) {
-          send("text", { text: "\n[max tool rounds reached]" });
-          break;
-        }
-      } else {
-        if (++ragRound >= MAX_RAG_ROUNDS) {
-          send("text", { text: "\n[max rag rounds reached]" });
-          break;
-        }
+      if (++toolRound >= MAX_TOOL_ROUNDS) {
+        send("text", { text: "\n[max tool rounds reached]" });
+        break;
       }
     }
 
@@ -592,7 +585,8 @@ app.post("/api/chat", async (req, res) => {
         tokenCount = await lmmodel.countTokens(serialized);
         console.log(`[countTokens] ${tokenCount} / ${contextLength}`);
       } catch (e) {
-        console.warn("[countTokens] failed:", e.message);
+        console.warn("[countTokens] failed:", e.message ?? String(e));
+        lmmodel = null; // stale handle (model reloaded) — disable until server restart
       }
     }
     const shouldCompact =

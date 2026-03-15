@@ -25,6 +25,58 @@
       "createdAt": "2026-03-05T14:53:53.926Z",
       "updatedAt": "2026-03-05T14:53:53.926Z",
       "completedAt": null
+    },
+    {
+      "id": "f7a168ed-b9e6-4079-b0b8-dff2562a006e",
+      "title": "Daily Rotator Cuff Stretching Reminder",
+      "role": "health",
+      "priority": "medium",
+      "status": "open",
+      "notes": "Warm-up with pendulums, then cross-body stretch and doorway chest stretch. Finish feeling loose, not sore. Check the Gemini stretching advice notes for detailed instructions.",
+      "dueDate": null,
+      "suggestedAgent": "health",
+      "createdAt": "2026-03-08T18:28:55.280Z",
+      "updatedAt": "2026-03-08T18:28:55.280Z",
+      "completedAt": null
+    },
+    {
+      "id": "6a048d44-9782-430b-a064-b4f418c31262",
+      "title": "Morning Stretching - Pendulums & Cross-Body Stretch",
+      "role": "health",
+      "priority": "medium",
+      "status": "open",
+      "notes": "Warm-up with pendulums first, then cross-body stretch. Don't overdo it - finish feeling loose, not sore.",
+      "dueDate": null,
+      "suggestedAgent": "health",
+      "createdAt": "2026-03-08T18:34:35.395Z",
+      "updatedAt": "2026-03-08T18:34:35.395Z",
+      "completedAt": null
+    },
+    {
+      "id": "77c42f92-2218-43fc-bcdc-d5471da5046b",
+      "title": "Evening Stretching - Doorway Chest & Sleeper Stretches",
+      "role": "health",
+      "priority": "medium",
+      "status": "open",
+      "notes": "Doorway chest stretch to open joint space. Sleeper stretch for deeper work. Stop if any sharp pain.",
+      "dueDate": null,
+      "suggestedAgent": "health",
+      "createdAt": "2026-03-08T18:34:37.278Z",
+      "updatedAt": "2026-03-08T18:34:37.278Z",
+      "completedAt": null
+    },
+    {
+      "id": "cd9095bb-6160-490a-bcc6-7cdd2cd35191",
+      "title": "Weekly Stretching Progress Check & Notes",
+      "role": "health",
+      "priority": "medium",
+      "status": "open",
+      "notes": "Review progress, note any improvements in range of motion. Remember: if more sore the next morning, scale back. Stay consistent but gentle! Check with your physical therapist about progression if needed.",
+      "dueDate": null,
+      "suggestedAgent": null,
+      "createdAt": "2026-03-08T18:34:41.092Z",
+      "updatedAt": "2026-03-08T18:34:41.092Z",
+      "completedAt": null
     }
   ]
 }
