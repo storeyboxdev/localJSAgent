@@ -1,13 +1,18 @@
 {
-  "name": "lmstudio",
+  "name": "localai",
   "version": "1.0.0",
-  "description": "",
+  "description": "Local AI personal assistant with Electron desktop app",
   "license": "ISC",
   "author": "",
   "type": "module",
-  "main": "dateTime.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "concurrently --names \"API,UI\" --prefix-colors \"cyan,magenta\" \"node server.js\" \"npm run dev --prefix client\"",
+    "electron:dev": "electron .",
+    "electron:build": "cd client && npm run build && cd .. && electron-builder build",
+    "electron:build:win": "electron-builder build --win",
+    "electron:build:mac": "electron-builder build --mac",
+    "electron:build:linux": "electron-builder build --linux",
     "docling:start": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml up docling-serve -d",
     "docling:restart": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml restart docling-serve",
     "docling:stop": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml stop docling-serve",
@@ -15,22 +20,62 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^9.2.1",
+    "electron": "^41.0.2",
+    "electron-builder": "^26.8.1"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.58",
     "@ai-sdk/mcp": "^1.0.19",
     "@ai-sdk/openai-compatible": "^2.0.28",
     "@lmnr-ai/lmnr": "^0.8.14",
     "@lmstudio/sdk": "^1.5.0",
     "@supabase/supabase-js": "^2.98.0",
+    "@tonejs/midi": "^2.0.28",
     "ai": "^6.0.77",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
+    "electron-updater": "^6.8.3",
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "multer": "^2.1.0",
     "openai": "^6.18.0",
-    "zod": "^4.3.6",
-    "@tonejs/midi": "^2.0.28"
+    "zod": "^4.3.6"
+  },
+  "build": {
+    "appId": "com.localai.assistant",
+    "productName": "LocalAI",
+    "directories": {
+      "output": "releases"
+    },
+    "files": [
+      "electron/**",
+      "server.js",
+      "tools/**",
+      "lib/**",
+      "agents/**",
+      "monitors/**",
+      "archetypes/**",
+      "client/dist/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "system-prompt.txt", "to": "system-prompt.txt" },
+      { "from": "personal.txt", "to": "personal.txt" }
+    ],
+    "publish": {
+      "provider": "generic",
+      "url": "http://192.168.1.91:3000/releases/"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

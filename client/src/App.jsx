@@ -595,6 +595,179 @@ function NewAgentModal({ onClose, onCreated }) {
 }
 
 // ---------------------------------------------------------------------------
+// SettingsPanel — configure model provider (used by Electron app)
+// ---------------------------------------------------------------------------
+
+const PROVIDER_OPTIONS = [
+  { value: "lmstudio-local", label: "LM Studio (this machine)", showBaseURL: true, showAPIKey: false,
+    baseURLDefault: "http://localhost:1234/v1",
+    note: "LM Studio running on the same machine as this app." },
+  { value: "lmstudio-local-network", label: "LM Studio (network — 192.168.1.91)", showBaseURL: true, showAPIKey: false,
+    baseURLDefault: "http://192.168.1.91:1234/v1",
+    note: "LM Studio running on the server at 192.168.1.91. Change the IP if your LM Studio host is different." },
+  { value: "openai-compatible", label: "OpenAI-Compatible API", showBaseURL: true, showAPIKey: true,
+    baseURLDefault: "",
+    note: "Any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio on a custom address, etc.)." },
+  { value: "openai", label: "OpenAI", showBaseURL: false, showAPIKey: true,
+    baseURLDefault: "https://api.openai.com/v1",
+    note: "OpenAI cloud API. Requires a valid API key." },
+  { value: "anthropic", label: "Anthropic (Claude)", showBaseURL: false, showAPIKey: true,
+    baseURLDefault: "",
+    note: "Anthropic cloud API. Requires a valid API key." },
+];
+
+function SettingsPanel({ onClose }) {
+  const [config, setConfig] = useState(null);
+  const [available, setAvailable] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((data) => {
+        setAvailable(data.available);
+        if (data.available) setConfig(data.config);
+        setLoading(false);
+      })
+      .catch(() => { setAvailable(false); setLoading(false); });
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      setSaved(true);
+      // Server will restart; page will go offline briefly then come back
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (e) {
+      setError(e.message);
+      setSaving(false);
+    }
+  }
+
+  const providerOpt = PROVIDER_OPTIONS.find((p) => p.value === config?.provider) || PROVIDER_OPTIONS[0];
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content settings-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Settings</h2>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+
+        {loading && <div className="settings-loading">Loading...</div>}
+
+        {!loading && !available && (
+          <div className="settings-body">
+            <p className="settings-note">
+              Settings configuration is only available when running inside the Electron desktop app.
+              In browser mode, configure the server via your <code>.env</code> file.
+            </p>
+            <div className="settings-section">
+              <h3>Download Desktop App</h3>
+              <p className="settings-note">Get the standalone Electron desktop app:</p>
+              <div className="settings-download-links">
+                <a href="/download/windows" className="settings-download-btn">Windows (.exe)</a>
+                <a href="/download/mac" className="settings-download-btn">macOS (.dmg)</a>
+                <a href="/download/linux" className="settings-download-btn">Linux (.AppImage)</a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!loading && available && config && (
+          <div className="settings-body">
+            <div className="settings-section">
+              <h3>Model Provider</h3>
+              <label className="settings-label">Provider</label>
+              <select
+                className="settings-select"
+                value={config.provider}
+                onChange={(e) => {
+                  const opt = PROVIDER_OPTIONS.find((p) => p.value === e.target.value);
+                  setConfig((c) => ({ ...c, provider: e.target.value, baseURL: opt?.baseURLDefault || c.baseURL }));
+                }}
+              >
+                {PROVIDER_OPTIONS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+              {providerOpt.note && <p className="settings-note">{providerOpt.note}</p>}
+
+              {providerOpt.showBaseURL && (
+                <>
+                  <label className="settings-label">Base URL</label>
+                  <input
+                    className="settings-input"
+                    value={config.baseURL || ""}
+                    onChange={(e) => setConfig((c) => ({ ...c, baseURL: e.target.value }))}
+                    placeholder={providerOpt.baseURLDefault}
+                  />
+                </>
+              )}
+
+              {providerOpt.showAPIKey && (
+                <>
+                  <label className="settings-label">API Key</label>
+                  <input
+                    className="settings-input"
+                    type="password"
+                    value={config.apiKey || ""}
+                    onChange={(e) => setConfig((c) => ({ ...c, apiKey: e.target.value }))}
+                    placeholder="sk-..."
+                  />
+                </>
+              )}
+
+              <label className="settings-label">Model ID (optional)</label>
+              <input
+                className="settings-input"
+                value={config.model || ""}
+                onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
+                placeholder="Leave blank to auto-detect (LM Studio) or use default"
+              />
+            </div>
+
+            <div className="settings-section">
+              <h3>Update Server</h3>
+              <label className="settings-label">Update Server URL</label>
+              <input
+                className="settings-input"
+                value={config.updateServerURL || ""}
+                onChange={(e) => setConfig((c) => ({ ...c, updateServerURL: e.target.value }))}
+                placeholder="http://192.168.1.91:3000/releases/"
+              />
+              <p className="settings-note">
+                Defaults to 192.168.1.91 (reserved server IP). Change this if you host the
+                update server at a different address.
+              </p>
+            </div>
+
+            {error && <p className="settings-error">{error}</p>}
+
+            <div className="settings-actions">
+              <button className="settings-save-btn" onClick={handleSave} disabled={saving}>
+                {saved ? "Saved — reloading..." : saving ? "Saving..." : "Save & Restart Server"}
+              </button>
+              <button className="settings-cancel-btn" onClick={onClose}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // KnowledgeBasePanel — document upload + list (agent-aware)
 // ---------------------------------------------------------------------------
 function KnowledgeBasePanel({ onClose, activeAgentId, activeAgent }) {
@@ -764,6 +937,7 @@ function App() {
   const [activeAgentId, setActiveAgentId] = useState(null);
   const [showNewAgentModal, setShowNewAgentModal] = useState(false);
   const [showKBPanel, setShowKBPanel] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Calendar event notifications from the monitor
   const [agentNotification, setAgentNotification] = useState(null);
@@ -1127,6 +1301,13 @@ function App() {
           >
             📚 Knowledge Base
           </button>
+          <button
+            className="sidebar-settings-btn"
+            onClick={() => setShowSettings(true)}
+            title="Configure model provider and app settings"
+          >
+            ⚙ Settings
+          </button>
         </div>
       </aside>
 
@@ -1240,6 +1421,9 @@ function App() {
           activeAgentId={activeAgentId}
           activeAgent={activeAgent}
         />
+      )}
+      {showSettings && (
+        <SettingsPanel onClose={() => setShowSettings(false)} />
       )}
     </div>
   );

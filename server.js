@@ -3,14 +3,15 @@
 import "dotenv/config";
 import { Laminar, getTracer } from "@lmnr-ai/lmnr";
 Laminar.initialize({ projectApiKey: process.env.LMNR_PROJECT_API_KEY });
-import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import multer from "multer";
 import { LMStudioClient } from "@lmstudio/sdk";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { streamText, generateText } from "ai";
 import { tools, calendar, activeCalendar } from "./tools/index.js";
@@ -49,78 +50,100 @@ const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8").replace(
   }),
 );
 
-const provider = createOpenAICompatible({
-  name: "lmstudio",
-  apiKey: "lm-studio",
-  baseURL: process.env.LMSTUDIO_BASE_URL,
-});
+// ── Provider + model selection ────────────────────────────────────────────────
+// Supports: lmstudio-local, lmstudio-local-network, openai-compatible, openai, anthropic
+// Configured via PROVIDER_TYPE env var (set by Electron from config.json, or .env for browser mode)
 
-// Fetch loaded model info from LM Studio HTTP API
-const apiBase = process.env.LMSTUDIO_BASE_URL.replace(/\/v1\/?$/, "");
-const modelsRes = await fetch(`${apiBase}/api/v0/models`);
-const modelsData = await modelsRes.json();
-const loadedModels = modelsData.data.filter(
-  (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm"),
-);
-if (loadedModels.length === 0)
-  throw new Error("No loaded LLM found in LM Studio. Load a model first.");
-const preferredId = process.env.MAIN_LLM;
-const loadedLlm = preferredId
-  ? (loadedModels.find((m) => m.id === preferredId) ??
-    loadedModels.find((m) =>
-      m.id.toLowerCase().includes(preferredId.toLowerCase()),
-    ) ??
-    loadedModels[0])
-  : loadedModels[0];
-if (
-  preferredId &&
-  loadedLlm.id !== preferredId &&
-  !loadedLlm.id.toLowerCase().includes(preferredId.toLowerCase())
-) {
-  console.warn(
-    `[model] MAIN_LLM="${preferredId}" not found among loaded models — using "${loadedLlm.id}" instead`,
-  );
+const PROVIDER_TYPE = process.env.PROVIDER_TYPE || "lmstudio-local";
+const API_KEY = process.env.API_KEY || process.env.OPENAI_API_KEY || "";
+
+let provider;
+if (PROVIDER_TYPE === "anthropic") {
+  provider = createAnthropic({ apiKey: API_KEY });
+} else {
+  // All other types: lmstudio-*, openai-compatible, openai — use OpenAI-compat layer
+  const baseURL =
+    PROVIDER_TYPE === "openai"
+      ? "https://api.openai.com/v1"
+      : process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1";
+  provider = createOpenAICompatible({
+    name: PROVIDER_TYPE,
+    apiKey: API_KEY || "lm-studio",
+    baseURL,
+  });
 }
-let contextLength = loadedLlm.loaded_context_length;
 
-// Thinking models (Qwen3, DeepSeek-R1, QwQ) emit <think> blocks by default.
-// For a personal assistant, thinking mode is counterproductive: it's slower, burns
-// context, and causes UI artifacts. Disable it via the /no_think system-prompt prefix
-// that Qwen3's chat template (and derivatives) respect.
+// Model ID and context length — LM Studio providers discover via HTTP API;
+// commercial providers use MAIN_LLM directly with a sensible default context.
+let modelId;
+let contextLength;
 const THINKING_MODEL_RE = /qwen3|deepseek-r1|qwq/i;
-const isThinkingModel = THINKING_MODEL_RE.test(loadedLlm.id);
-if (isThinkingModel)
-  console.log(
-    `[model] thinking model detected — thinking mode disabled via /no_think`,
+let isThinkingModel = false;
+
+if (PROVIDER_TYPE.startsWith("lmstudio")) {
+  const apiBase = (process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
+  const modelsRes = await fetch(`${apiBase}/api/v0/models`);
+  const modelsData = await modelsRes.json();
+  const loadedModels = modelsData.data.filter(
+    (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm"),
   );
+  if (loadedModels.length === 0)
+    throw new Error("No loaded LLM found in LM Studio. Load a model first.");
+  const preferredId = process.env.MAIN_LLM;
+  const loadedLlm = preferredId
+    ? (loadedModels.find((m) => m.id === preferredId) ??
+      loadedModels.find((m) =>
+        m.id.toLowerCase().includes(preferredId.toLowerCase()),
+      ) ??
+      loadedModels[0])
+    : loadedModels[0];
+  if (
+    preferredId &&
+    loadedLlm.id !== preferredId &&
+    !loadedLlm.id.toLowerCase().includes(preferredId.toLowerCase())
+  ) {
+    console.warn(
+      `[model] MAIN_LLM="${preferredId}" not found — using "${loadedLlm.id}"`,
+    );
+  }
+  modelId = loadedLlm.id;
+  contextLength = loadedLlm.loaded_context_length;
+  isThinkingModel = THINKING_MODEL_RE.test(modelId);
+} else {
+  // Commercial / compatible API: use MAIN_LLM directly, no model discovery
+  modelId = process.env.MAIN_LLM || (PROVIDER_TYPE === "anthropic" ? "claude-sonnet-4-6" : "gpt-4o");
+  contextLength = 128000; // safe default; compaction will trigger at 80%
+}
+
+if (isThinkingModel)
+  console.log(`[model] thinking model detected — /no_think enabled`);
 
 /** Prepend /no_think for thinking models so the model skips reasoning output. */
 function noThink(prompt) {
   return isThinkingModel ? `/no_think\n${prompt}` : prompt;
 }
-const model = provider(loadedLlm.id);
-console.log(`Model: ${loadedLlm.id} (context: ${contextLength})`);
 
+const model = provider(modelId);
+console.log(`Model: ${modelId} (provider: ${PROVIDER_TYPE}, context: ${contextLength})`);
 
-// LMStudio SDK — for countTokens() (requires WebSocket SDK API enabled in LM Studio)
-const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(
-  /\/v1\/?$/,
-  "",
-);
+// LMStudio SDK — optional WebSocket token counting (LM Studio only)
 let lmmodel = null;
-try {
-  const lmsClient = new LMStudioClient({ baseUrl: wsBase, logger: "error" });
-  lmmodel = await lmsClient.llm.model();
-  contextLength = await lmmodel.getContextLength();
-  console.log("[lmstudio-sdk] connected — token counting enabled");
-} catch (e) {
-  console.warn(
-    "[lmstudio-sdk] SDK unavailable, token counting disabled:",
-    e.message.split("\n")[0],
-  );
-  console.warn(
-    "[lmstudio-sdk] Enable 'SDK API' in LM Studio → Local Server settings",
-  );
+if (PROVIDER_TYPE.startsWith("lmstudio") && process.env.LMSTUDIO_BASE_URL) {
+  const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(/\/v1\/?$/, "");
+  try {
+    const lmsClient = new LMStudioClient({ baseUrl: wsBase, logger: "error" });
+    lmmodel = await lmsClient.llm.model();
+    contextLength = await lmmodel.getContextLength();
+    console.log("[lmstudio-sdk] connected — token counting enabled");
+  } catch (e) {
+    console.warn(
+      "[lmstudio-sdk] SDK unavailable, token counting disabled:",
+      e.message.split("\n")[0],
+    );
+    console.warn(
+      "[lmstudio-sdk] Enable 'SDK API' in LM Studio → Local Server settings",
+    );
+  }
 }
 
 const app = express();
@@ -854,12 +877,82 @@ app.delete("/api/documents/:id", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Settings API (used by Electron app to read/write config.json)
+// ---------------------------------------------------------------------------
+
+const CONFIG_PATH = process.env.CONFIG_PATH || null;
+
+app.get("/api/settings", (req, res) => {
+  if (!CONFIG_PATH || !existsSync(CONFIG_PATH)) {
+    return res.json({ available: false });
+  }
+  try {
+    const config = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    res.json({ available: true, config });
+  } catch {
+    res.status(500).json({ error: "Failed to read config" });
+  }
+});
+
+app.put("/api/settings", (req, res) => {
+  if (!CONFIG_PATH) {
+    return res.status(400).json({ error: "No config path — not running inside Electron" });
+  }
+  try {
+    writeFileSync(CONFIG_PATH, JSON.stringify(req.body, null, 2));
+    res.json({ ok: true });
+    // Signal Electron main process to restart the server with new config
+    if (process.send) process.send("restart-server");
+  } catch {
+    res.status(500).json({ error: "Failed to write config" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Download routes (served from releases/ for Electron distribution)
+// ---------------------------------------------------------------------------
+
+const releasesDir = join(__dirname, "releases");
+
+if (existsSync(releasesDir)) {
+  app.use("/releases", express.static(releasesDir));
+}
+
+app.get("/download/:platform", (req, res) => {
+  const platform = req.params.platform.toLowerCase();
+  const map = { windows: ".exe", win: ".exe", mac: ".dmg", macos: ".dmg", linux: ".AppImage" };
+  const ext = map[platform];
+  if (!ext) return res.status(400).json({ error: "Unknown platform. Use: windows, mac, linux" });
+
+  if (!existsSync(releasesDir)) {
+    return res.status(404).json({ error: "No releases built yet. Run: npm run electron:build" });
+  }
+
+  const file = readdirSync(releasesDir).find((f) => f.endsWith(ext) && !f.endsWith(".blockmap"));
+  if (!file) return res.status(404).json({ error: `No ${platform} installer found in releases/` });
+  res.download(join(releasesDir, file));
+});
+
+// ---------------------------------------------------------------------------
+// Static file serving (Electron production mode: SERVE_STATIC=1)
+// Express serves the built React client so Electron only needs one port.
+// ---------------------------------------------------------------------------
+
+if (process.env.SERVE_STATIC) {
+  const clientDist = join(__dirname, "client", "dist");
+  app.use(express.static(clientDist));
+  app.get("*splat", (req, res) => res.sendFile(join(clientDist, "index.html")));
+}
+
+// ---------------------------------------------------------------------------
 // Server startup — listen immediately so static endpoints work before MCP connects
 // ---------------------------------------------------------------------------
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
+  // Signal Electron main process that the server is ready to accept connections
+  if (process.send) process.send("ready");
 });
 
 async function start() {

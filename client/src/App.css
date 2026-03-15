@@ -175,6 +175,153 @@ body {
   color: #e2e8f0;
 }
 
+.sidebar-settings-btn {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 0.78rem;
+  cursor: pointer;
+  text-align: left;
+  margin-top: 0.4rem;
+}
+
+.sidebar-settings-btn:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+
+/* ============================================================
+   Settings Panel
+   ============================================================ */
+
+.settings-panel {
+  max-width: 520px;
+  width: 100%;
+}
+
+.settings-body {
+  padding: 0 1.5rem 1.5rem;
+  overflow-y: auto;
+  max-height: 70vh;
+}
+
+.settings-loading {
+  padding: 2rem;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.settings-section {
+  margin-bottom: 1.5rem;
+}
+
+.settings-section h3 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 0.75rem;
+}
+
+.settings-label {
+  display: block;
+  font-size: 0.82rem;
+  color: #cbd5e1;
+  margin: 0.75rem 0 0.3rem;
+}
+
+.settings-input,
+.settings-select {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  box-sizing: border-box;
+}
+
+.settings-select {
+  cursor: pointer;
+}
+
+.settings-note {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin: 0.4rem 0 0;
+  line-height: 1.4;
+}
+
+.settings-error {
+  color: #f87171;
+  font-size: 0.82rem;
+  margin: 0.5rem 0;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.settings-save-btn {
+  flex: 1;
+  padding: 0.55rem;
+  background: #3b82f6;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.settings-save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.settings-cancel-btn {
+  padding: 0.55rem 1rem;
+  background: transparent;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.settings-cancel-btn:hover {
+  background: #334155;
+}
+
+.settings-download-links {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.settings-download-btn {
+  padding: 0.45rem 0.75rem;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+
+.settings-download-btn:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+
 /* ============================================================
    Chat panel
    ============================================================ */
