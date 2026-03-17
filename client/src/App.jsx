@@ -752,6 +752,21 @@ function SettingsPanel({ onClose }) {
               </p>
             </div>
 
+            <div className="settings-section">
+              <h3>Knowledge Base</h3>
+              <label className="settings-label">Knowledge Base Server URL</label>
+              <input
+                className="settings-input"
+                value={config.knowledgeBaseURL || ""}
+                onChange={(e) => setConfig((c) => ({ ...c, knowledgeBaseURL: e.target.value }))}
+                placeholder="http://192.168.1.91:3000"
+              />
+              <p className="settings-note">
+                URL of the server that hosts the shared knowledge base and embedding model.
+                Defaults to 192.168.1.91. Leave empty to use a local Supabase instance.
+              </p>
+            </div>
+
             {error && <p className="settings-error">{error}</p>}
 
             <div className="settings-actions">
@@ -942,6 +957,12 @@ function App() {
   // Calendar event notifications from the monitor
   const [agentNotification, setAgentNotification] = useState(null);
 
+  // Server health status
+  const [health, setHealth] = useState(null);
+
+  // Electron auto-updater status
+  const [updateStatus, setUpdateStatus] = useState(null);
+
   const messagesEndRef = useRef(null);
   const apiMessagesRef = useRef([]);
 
@@ -951,6 +972,12 @@ function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Listen for Electron update-status IPC
+  useEffect(() => {
+    if (!window.electronAPI?.onUpdateStatus) return;
+    window.electronAPI.onUpdateStatus((data) => setUpdateStatus(data));
+  }, []);
 
   useEffect(() => {
     fetch("/api/context-info")
@@ -990,6 +1017,19 @@ function App() {
     };
     es.onerror = () => {};
     return () => es.close();
+  }, []);
+
+  // Poll server health every 5 seconds
+  useEffect(() => {
+    function pollHealth() {
+      fetch("/api/health")
+        .then((r) => r.json())
+        .then((d) => setHealth(d))
+        .catch(() => setHealth({ server: "unreachable", llm: { status: "unknown" }, tools: "unknown" }));
+    }
+    pollHealth();
+    const id = setInterval(pollHealth, 5000);
+    return () => clearInterval(id);
   }, []);
 
   async function fetchAgents() {
@@ -1132,6 +1172,17 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Server error" }));
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: "assistant", text: err.error || "Server error" };
+          return updated;
+        });
+        setIsLoading(false);
+        return;
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1325,6 +1376,13 @@ function App() {
           </div>
         )}
 
+        {health?.llm?.status === "error" && (
+          <div className="connection-error-banner">
+            <span>⚠ {health.llm.error || "LLM not connected"}</span>
+            <button onClick={() => setShowSettings(true)}>Open Settings</button>
+          </div>
+        )}
+
         {agentNotification && (
           <div className="agent-notification" onClick={() => {
             loadAgent(agentNotification.agentId);
@@ -1372,6 +1430,56 @@ function App() {
         </div>
 
         <div className="status-bar">
+          {updateStatus && (
+            <div className="update-banner">
+              {updateStatus.status === "available" && (
+                <>
+                  <span>v{updateStatus.version} available</span>
+                  <button
+                    className="update-btn"
+                    onClick={() => {
+                      setUpdateStatus((s) => ({ ...s, status: "downloading" }));
+                      window.electronAPI.downloadUpdate();
+                    }}
+                  >
+                    Download
+                  </button>
+                </>
+              )}
+              {updateStatus.status === "downloading" && (
+                <span>Downloading update...</span>
+              )}
+              {updateStatus.status === "downloaded" && (
+                <>
+                  <span>v{updateStatus.version} ready</span>
+                  <button className="update-btn" onClick={() => window.electronAPI.installUpdate()}>
+                    Restart
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {health && (() => {
+            const serverStatus = health.server === "ready"
+              ? (health.tools === "ready" ? "good" : "loading")
+              : "error";
+            const llmStatus = health.llm?.status === "connected" ? "good"
+              : health.llm?.status === "loading" ? "loading"
+              : "error";
+            const serverTip = health.server === "unreachable" ? "Server: unreachable"
+              : `Server: ${health.server} | Tools: ${health.tools}`;
+            const llmTip = health.llm?.status === "connected"
+              ? `LLM: connected — ${health.llm.modelId}`
+              : health.llm?.error
+                ? `LLM: error — ${health.llm.error}`
+                : `LLM: ${health.llm?.status ?? "unknown"}`;
+            return (
+              <div className="status-dots">
+                <div className="status-dot" data-status={serverStatus} title={serverTip} />
+                <div className="status-dot" data-status={llmStatus} title={llmTip} />
+              </div>
+            );
+          })()}
           <div className="token-info">
             <div className="token-bar-container">
               <div

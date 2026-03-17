@@ -10,9 +10,9 @@
     "start": "concurrently --names \"API,UI\" --prefix-colors \"cyan,magenta\" \"node server.js\" \"npm run dev --prefix client\"",
     "electron:dev": "electron .",
     "electron:build": "cd client && npm run build && cd .. && electron-builder build",
-    "electron:build:win": "electron-builder build --win",
-    "electron:build:mac": "electron-builder build --mac",
-    "electron:build:linux": "electron-builder build --linux",
+    "electron:build:win": "cd client && npm run build && cd .. && taskkill /F /IM \"LocalAI.exe\" || true & electron-builder build --win",
+    "electron:build:mac": "cd client && npm run build && cd .. && pkill -f LocalAI || true && electron-builder build --mac",
+    "electron:build:linux": "cd client && npm run build && cd .. && pkill -f LocalAI || true && electron-builder build --linux",
     "docling:start": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml up docling-serve -d",
     "docling:restart": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml restart docling-serve",
     "docling:stop": "docker compose -f ../ragtut/claude-code-agentic-rag-masterclass/docker-compose.yml stop docling-serve",
@@ -65,7 +65,7 @@
     ],
     "publish": {
       "provider": "generic",
-      "url": "http://192.168.1.91:3001/releases/"
+      "url": "http://192.168.1.91:3000/releases/"
     },
     "win": {
       "target": "nsis"

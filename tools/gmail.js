@@ -39,7 +39,9 @@ if (gmailCredsExist) {
   gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
   try {
-    const { data: profile } = await gmail.users.getProfile({ userId: "me" });
+    const GMAIL_TIMEOUT = 5000;
+    const gmailTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error(`Gmail profile check timed out after ${GMAIL_TIMEOUT}ms`)), GMAIL_TIMEOUT));
+    const { data: profile } = await Promise.race([gmail.users.getProfile({ userId: "me" }), gmailTimeout]);
     USER_EMAIL = profile.emailAddress;
     gmailReady = true;
     console.log(`Gmail: connected as ${USER_EMAIL}`);

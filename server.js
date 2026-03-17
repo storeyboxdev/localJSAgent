@@ -2,7 +2,9 @@
 
 import "dotenv/config";
 import { Laminar, getTracer } from "@lmnr-ai/lmnr";
-Laminar.initialize({ projectApiKey: process.env.LMNR_PROJECT_API_KEY });
+if (process.env.LMNR_PROJECT_API_KEY) {
+  Laminar.initialize({ projectApiKey: process.env.LMNR_PROJECT_API_KEY });
+}
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +41,7 @@ import { supabaseAdmin as supabase } from "./lib/supabase.js";
 import { parseFile } from "./lib/parsing.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const KB_URL = process.env.KNOWLEDGE_BASE_URL || null;
 
 const SYSTEM_PROMPT = readFileSync("system-prompt.txt", "utf-8").replace(
   "{{DATE}}",
@@ -80,39 +83,59 @@ let contextLength;
 const THINKING_MODEL_RE = /qwen3|deepseek-r1|qwq/i;
 let isThinkingModel = false;
 
+// ── Server health status (exposed via GET /api/health) ───────────────────────
+const serverStatus = {
+  server: "ready",
+  llm: { status: "loading", modelId: null, error: null },
+  tools: "initializing",
+};
+
 if (PROVIDER_TYPE.startsWith("lmstudio")) {
   const apiBase = (process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1").replace(/\/v1\/?$/, "");
-  const modelsRes = await fetch(`${apiBase}/api/v0/models`);
-  const modelsData = await modelsRes.json();
-  const loadedModels = modelsData.data.filter(
-    (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm"),
-  );
-  if (loadedModels.length === 0)
-    throw new Error("No loaded LLM found in LM Studio. Load a model first.");
-  const preferredId = process.env.MAIN_LLM;
-  const loadedLlm = preferredId
-    ? (loadedModels.find((m) => m.id === preferredId) ??
-      loadedModels.find((m) =>
-        m.id.toLowerCase().includes(preferredId.toLowerCase()),
-      ) ??
-      loadedModels[0])
-    : loadedModels[0];
-  if (
-    preferredId &&
-    loadedLlm.id !== preferredId &&
-    !loadedLlm.id.toLowerCase().includes(preferredId.toLowerCase())
-  ) {
-    console.warn(
-      `[model] MAIN_LLM="${preferredId}" not found — using "${loadedLlm.id}"`,
+  try {
+    const fetchController = new AbortController();
+    const fetchTimeout = setTimeout(() => fetchController.abort(), 5000);
+    const modelsRes = await fetch(`${apiBase}/api/v0/models`, { signal: fetchController.signal });
+    clearTimeout(fetchTimeout);
+    const modelsData = await modelsRes.json();
+    const loadedModels = modelsData.data.filter(
+      (m) => m.state === "loaded" && (m.type === "llm" || m.type === "vlm"),
     );
+    if (loadedModels.length === 0)
+      throw new Error("No loaded LLM found in LM Studio. Load a model first.");
+    const preferredId = process.env.MAIN_LLM;
+    const loadedLlm = preferredId
+      ? (loadedModels.find((m) => m.id === preferredId) ??
+        loadedModels.find((m) =>
+          m.id.toLowerCase().includes(preferredId.toLowerCase()),
+        ) ??
+        loadedModels[0])
+      : loadedModels[0];
+    if (
+      preferredId &&
+      loadedLlm.id !== preferredId &&
+      !loadedLlm.id.toLowerCase().includes(preferredId.toLowerCase())
+    ) {
+      console.warn(
+        `[model] MAIN_LLM="${preferredId}" not found — using "${loadedLlm.id}"`,
+      );
+    }
+    modelId = loadedLlm.id;
+    contextLength = loadedLlm.loaded_context_length;
+    isThinkingModel = THINKING_MODEL_RE.test(modelId);
+    serverStatus.llm = { status: "connected", modelId, error: null };
+  } catch (e) {
+    console.warn(`[model] Could not connect to LM Studio at ${apiBase}: ${e.message}`);
+    console.warn("[model] Chat will not work until a valid provider is configured in Settings.");
+    modelId = process.env.MAIN_LLM || "none";
+    contextLength = 128000;
+    serverStatus.llm = { status: "error", modelId, error: e.message };
   }
-  modelId = loadedLlm.id;
-  contextLength = loadedLlm.loaded_context_length;
-  isThinkingModel = THINKING_MODEL_RE.test(modelId);
 } else {
   // Commercial / compatible API: use MAIN_LLM directly, no model discovery
   modelId = process.env.MAIN_LLM || (PROVIDER_TYPE === "anthropic" ? "claude-sonnet-4-6" : "gpt-4o");
   contextLength = 128000; // safe default; compaction will trigger at 80%
+  serverStatus.llm = { status: "connected", modelId, error: null };
 }
 
 if (isThinkingModel)
@@ -128,12 +151,14 @@ console.log(`Model: ${modelId} (provider: ${PROVIDER_TYPE}, context: ${contextLe
 
 // LMStudio SDK — optional WebSocket token counting (LM Studio only)
 let lmmodel = null;
-if (PROVIDER_TYPE.startsWith("lmstudio") && process.env.LMSTUDIO_BASE_URL) {
+if (PROVIDER_TYPE.startsWith("lmstudio") && process.env.LMSTUDIO_BASE_URL && modelId !== "none") {
   const wsBase = process.env.LMSTUDIO_BASE_URL.replace(/^http/, "ws").replace(/\/v1\/?$/, "");
   try {
     const lmsClient = new LMStudioClient({ baseUrl: wsBase, logger: "error" });
-    lmmodel = await lmsClient.llm.model();
-    contextLength = await lmmodel.getContextLength();
+    const SDK_TIMEOUT = 3000;
+    const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error(`LM Studio SDK timed out after ${ms}ms`)), ms));
+    lmmodel = await Promise.race([lmsClient.llm.model(), timeout(SDK_TIMEOUT)]);
+    contextLength = await Promise.race([lmmodel.getContextLength(), timeout(SDK_TIMEOUT)]);
     console.log("[lmstudio-sdk] connected — token counting enabled");
   } catch (e) {
     console.warn(
@@ -311,6 +336,10 @@ app.get("/api/context-info", (req, res) => {
   res.json({ contextLength });
 });
 
+app.get("/api/health", (req, res) => {
+  res.json(serverStatus);
+});
+
 // ---------------------------------------------------------------------------
 // SSE event bus — persistent connection for server-push notifications
 // ---------------------------------------------------------------------------
@@ -432,6 +461,9 @@ app.post("/api/agents/:id/run-briefing", async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post("/api/agents/converse", async (req, res) => {
+  if (modelId === "none") {
+    return res.status(503).json({ error: "No LLM model available. Configure LM Studio or a provider in Settings." });
+  }
   const { messages } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: "messages array required" });
@@ -481,6 +513,9 @@ app.post("/api/agents/converse", async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post("/api/chat", async (req, res) => {
+  if (modelId === "none") {
+    return res.status(503).json({ error: "No LLM model available. Configure LM Studio or a provider in Settings." });
+  }
   const { messages, agentId } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: "messages array required" });
@@ -643,6 +678,9 @@ app.post("/api/chat", async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post("/api/compact", async (req, res) => {
+  if (modelId === "none") {
+    return res.status(503).json({ error: "No LLM model available. Configure LM Studio or a provider in Settings." });
+  }
   const { messages, agentId } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: "messages array required" });
@@ -737,6 +775,11 @@ app.post("/api/compact", async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/documents", async (req, res) => {
+  if (KB_URL) {
+    const qs = req.query.agentId ? `?agentId=${req.query.agentId}` : "";
+    const r = await fetch(`${KB_URL}/api/documents${qs}`);
+    return res.status(r.status).json(await r.json());
+  }
   if (!supabase) return res.json([]);
   try {
     let docQuery = supabase
@@ -775,6 +818,15 @@ app.get("/api/documents", async (req, res) => {
 });
 
 app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
+  if (KB_URL) {
+    const form = new FormData();
+    for (const file of req.files ?? []) {
+      form.append("files", new Blob([file.buffer], { type: file.mimetype }), file.originalname);
+    }
+    if (req.body.agentId) form.append("agentId", req.body.agentId);
+    const r = await fetch(`${KB_URL}/api/documents/upload`, { method: "POST", body: form });
+    return res.status(r.status).json(await r.json());
+  }
   if (!supabase) return res.status(503).json({ error: "Knowledge base not configured (SUPABASE_URL missing)" });
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: "No files uploaded" });
@@ -863,6 +915,10 @@ app.post("/api/documents/upload", upload.array("files"), async (req, res) => {
 });
 
 app.delete("/api/documents/:id", async (req, res) => {
+  if (KB_URL) {
+    const r = await fetch(`${KB_URL}/api/documents/${req.params.id}`, { method: "DELETE" });
+    return res.status(r.status).json(await r.json());
+  }
   if (!supabase) return res.status(503).json({ error: "Knowledge base not configured" });
   try {
     // Chunks are deleted by cascade (FK constraint) in Supabase
@@ -874,6 +930,26 @@ app.delete("/api/documents/:id", async (req, res) => {
 
     if (error) throw error;
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Knowledge base search (used by Electron clients proxying to this server)
+// ---------------------------------------------------------------------------
+
+app.post("/api/knowledge/search", async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: "Knowledge base not configured" });
+  const { query, limit = 5, threshold = 0.5, agentId } = req.body;
+  if (!query) return res.status(400).json({ error: "query required" });
+  try {
+    const results = await searchDocuments(query, {
+      limit,
+      threshold,
+      metadata_filter: agentId ? { agent_id: agentId } : undefined,
+    });
+    res.json(results);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -897,6 +973,12 @@ app.get("/api/settings", (req, res) => {
   }
 });
 
+// Send IPC message to Electron main process (utilityProcess uses parentPort)
+function ipcSend(msg) {
+  if (typeof process.parentPort !== "undefined") process.parentPort.postMessage(msg);
+  else if (process.send) process.send(msg);
+}
+
 app.put("/api/settings", (req, res) => {
   if (!CONFIG_PATH) {
     return res.status(400).json({ error: "No config path — not running inside Electron" });
@@ -905,10 +987,62 @@ app.put("/api/settings", (req, res) => {
     writeFileSync(CONFIG_PATH, JSON.stringify(req.body, null, 2));
     res.json({ ok: true });
     // Signal Electron main process to restart the server with new config
-    if (process.send) process.send("restart-server");
+    ipcSend("restart-server");
   } catch {
     res.status(500).json({ error: "Failed to write config" });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Remote user gate — non-localhost visitors see a download page, not the app
+// ---------------------------------------------------------------------------
+
+function isLocalhost(req) {
+  const ip = req.ip || req.connection?.remoteAddress || "";
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
+const DOWNLOAD_PAGE = `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LocalAI — Download</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:#0a0a0a;color:#e0e0e0;display:flex;align-items:center;justify-content:center;
+    min-height:100vh}
+  .card{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:16px;padding:48px;
+    max-width:480px;text-align:center}
+  h1{font-size:28px;margin-bottom:8px;color:#fff}
+  .subtitle{color:#888;margin-bottom:32px}
+  .downloads{display:flex;flex-direction:column;gap:12px}
+  a{display:block;padding:14px 24px;background:#2a2a4a;color:#7eb8ff;border-radius:8px;
+    text-decoration:none;font-weight:500;transition:background .2s}
+  a:hover{background:#3a3a5a}
+  .hint{margin-top:24px;font-size:13px;color:#666}
+</style>
+</head><body>
+<div class="card">
+  <h1>LocalAI</h1>
+  <p class="subtitle">Download the desktop app to get started</p>
+  <div class="downloads">
+    <a href="/download/windows">Windows (.exe)</a>
+    <a href="/download/mac">macOS (.dmg)</a>
+    <a href="/download/linux">Linux (.AppImage)</a>
+  </div>
+  <p class="hint">The app connects to this server for shared knowledge base and updates.</p>
+</div>
+</body></html>`;
+
+app.use((req, res, next) => {
+  // Let API, releases, and download routes through for Electron clients
+  if (req.path.startsWith("/api/") || req.path.startsWith("/releases") || req.path.startsWith("/download")) {
+    return next();
+  }
+  // Local users get the full app
+  if (isLocalhost(req)) return next();
+  // Remote users see the download page
+  res.type("html").send(DOWNLOAD_PAGE);
 });
 
 // ---------------------------------------------------------------------------
@@ -941,8 +1075,10 @@ app.get("/download/:platform", (req, res) => {
 // Express serves the built React client so Electron only needs one port.
 // ---------------------------------------------------------------------------
 
-if (process.env.SERVE_STATIC) {
-  const clientDist = join(__dirname, "client", "dist");
+const clientDist = join(__dirname, "client", "dist");
+const serveStatic = process.env.SERVE_STATIC || existsSync(join(clientDist, "index.html"));
+console.log(`[static] SERVE_STATIC=${process.env.SERVE_STATIC}, clientDist=${clientDist}, exists=${existsSync(join(clientDist, "index.html"))}`);
+if (serveStatic) {
   app.use(express.static(clientDist));
   app.get("*splat", (req, res) => res.sendFile(join(clientDist, "index.html")));
 }
@@ -955,7 +1091,7 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
   // Signal Electron main process that the server is ready to accept connections
-  if (process.send) process.send("ready");
+  ipcSend("ready");
 });
 
 async function start() {
@@ -999,27 +1135,37 @@ async function start() {
     }
   });
 
-  const newsMonitor = createNewsMonitor({
-    model,
-    mcpClient,
-    listAgentsFn: listAgents,
-    getAgentFn: getAgent,
-    saveAgentMessagesFn: saveAgentMessages,
-    noThinkFn: noThink,
-    NEWS_ARCHETYPE_ID,
-  });
-  newsMonitor.onBriefing((payload) => {
-    console.log(`[monitor] news briefing ready: "${payload.agentName}"`);
-    broadcastSSE({ type: "news-briefing", ...payload });
-  });
-
   registry = createMonitorRegistry();
   if (calMonitor) registry.register("calendar", calMonitor);
-  registry.register("news", newsMonitor);
+
+  if (modelId !== "none") {
+    const newsMonitor = createNewsMonitor({
+      model,
+      mcpClient,
+      listAgentsFn: listAgents,
+      getAgentFn: getAgent,
+      saveAgentMessagesFn: saveAgentMessages,
+      noThinkFn: noThink,
+      NEWS_ARCHETYPE_ID,
+    });
+    newsMonitor.onBriefing((payload) => {
+      console.log(`[monitor] news briefing ready: "${payload.agentName}"`);
+      broadcastSSE({ type: "news-briefing", ...payload });
+    });
+    registry.register("news", newsMonitor);
+  } else {
+    console.warn("[server] News monitor disabled — no LLM model available");
+  }
   registry.startAll();
 
+  serverStatus.tools = "ready";
   console.log("All tools loaded. Ready.");
 }
+
+// Safety net for async errors (e.g. LMStudio SDK WebSocket handler in Electron)
+process.on("unhandledRejection", (err) => {
+  console.error("[server] unhandled rejection:", err?.message ?? err);
+});
 
 // Graceful shutdown
 process.on("SIGINT", () => {
@@ -1028,4 +1174,7 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-start();
+start().catch((err) => {
+  console.error("[server] start() failed:", err.message);
+  console.warn("[server] Some features (web search, monitors) are unavailable.");
+});

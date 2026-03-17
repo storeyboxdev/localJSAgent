@@ -26,13 +26,19 @@ if (existsSync(googleKeyPath) && existsSync(calendarConfigPath)) {
     scopes: ["https://www.googleapis.com/auth/calendar"],
   });
 
-  await auth.authorize();
+  const GOOGLE_TIMEOUT = 5000;
+  const gTimeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error(`Google API timed out after ${ms}ms`)), ms));
+
+  await Promise.race([auth.authorize(), gTimeout(GOOGLE_TIMEOUT)]);
   console.log("Google Calendar: connected with service account");
 
   calendar = google.calendar({ version: "v3", auth });
 
   try {
-    await calendar.calendarList.insert({ requestBody: { id: activeCalendar } });
+    await Promise.race([
+      calendar.calendarList.insert({ requestBody: { id: activeCalendar } }),
+      gTimeout(GOOGLE_TIMEOUT),
+    ]);
   } catch (e) {
     if (e.code !== 409) console.warn("Could not subscribe to calendar:", e.message);
   }

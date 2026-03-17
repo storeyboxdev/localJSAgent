@@ -55,6 +55,15 @@ Defined using `tool()` from Vercel AI SDK with Zod parameter schemas. Registered
 - `listFiles`, `changeDirectory`, `currentDirectory` — Directory operations
 - `webSearch` — Tavily MCP-based web search (factory function taking mcpClient)
 
+### Electron (`electron/`)
+
+Desktop app wrapper that embeds the Express server.
+
+- `electron/main.js` — Main process: config management, IPC logging, loading screen, auto-update flow, config migration
+- `electron/preload.js` — Context-isolated IPC bridge for the renderer process
+- `ipcSend()` helper in `server.js` — sends messages to Electron parent via `process.parentPort.postMessage()` with `process.send()` fallback
+- Build commands: `npm run electron:build:win`, `electron:build:mac`, `electron:build:linux`
+
 ### Other files
 
 - `run.js` — Standalone terminal chat app (readline-based, same Vercel AI SDK pattern as server)

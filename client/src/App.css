@@ -354,6 +354,33 @@ body {
   font-size: 0.78rem;
 }
 
+.connection-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: #7f1d1d;
+  color: #fecaca;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #991b1b;
+}
+
+.connection-error-banner button {
+  padding: 0.3rem 0.75rem;
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.connection-error-banner button:hover {
+  background: #ef4444;
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -433,6 +460,28 @@ body {
   gap: 0.75rem;
 }
 
+.status-dots {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.status-dot[data-status="good"] { background: #22c55e; }
+.status-dot[data-status="loading"] { background: #f59e0b; animation: pulse-dot 1.5s infinite; }
+.status-dot[data-status="error"] { background: #ef4444; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .token-info {
   display: flex;
   align-items: center;
@@ -484,6 +533,35 @@ body {
 .compact-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── Update banner (inside status bar) ── */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #1e40af;
+  white-space: nowrap;
+}
+
+.update-btn {
+  padding: 0.15rem 0.5rem;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.update-btn:hover {
+  background: #1d4ed8;
 }
 
 /* ============================================================

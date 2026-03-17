@@ -52,6 +52,61 @@ node run.js
 
 ---
 
+## Electron Desktop App
+
+The project includes an Electron wrapper that bundles the Express server and provides a native desktop experience.
+
+### Overview
+
+- Embedded Express server (no separate terminal needed)
+- Settings UI for provider, model, API key, and port configuration
+- Health monitoring with status indicators (server + LLM connectivity)
+- Auto-update support via generic update server
+- Loading screen during server startup
+- Context-isolated IPC bridge (`electron/preload.js`)
+
+### Running in dev
+
+```bash
+npm run electron:dev    # Starts server + launches Electron
+```
+
+### Building
+
+```bash
+npm run electron:build:win    # Windows (.exe)
+npm run electron:build:mac    # macOS (.dmg)
+npm run electron:build:linux  # Linux (.AppImage)
+```
+
+### Configuration
+
+Electron stores `config.json` in the userData directory with these fields:
+
+| Field | Default | Description |
+|---|---|---|
+| `provider` | `lmstudio` | AI provider identifier |
+| `baseURL` | `http://localhost:1234/v1` | LM Studio API endpoint |
+| `apiKey` | — | API key (if required by provider) |
+| `model` | — | Model ID override |
+| `port` | `3001` | Express server port inside Electron |
+| `updateServerURL` | `http://192.168.1.91:3000/releases/` | Auto-update server URL |
+| `knowledgeBaseURL` | — | Remote knowledge base server URL |
+
+### Network Setup
+
+The default update server and knowledge base URL assume LAN IP `192.168.1.91`. Change this in **Settings** if running on a different machine.
+
+### Auto-Updates
+
+Uses electron-updater's generic provider. The update server URL points to a directory serving `latest.yml` and installer files. If auto-download is disabled, the app shows a banner with a manual download link.
+
+### Logs
+
+Electron logs to `localai.log` in the userData directory.
+
+---
+
 ## Environment Variables
 
 Create `.env` in the project root:
@@ -71,6 +126,7 @@ Create `.env` in the project root:
 | `TAVILY_API_KEY` | — | Tavily web search API key |
 | `CALENDAR_POLL_INTERVAL_MS` | `60000` | How often the calendar monitor polls (ms) |
 | `CALENDAR_LOOKAHEAD_MINUTES` | `15` | Window for upcoming-event alerts |
+| `KNOWLEDGE_BASE_URL` | — | Remote KB server URL (Electron clients proxy document/search endpoints here) |
 | `LMNR_PROJECT_API_KEY` | — | Laminar tracing API key (optional) |
 
 ---
@@ -85,6 +141,7 @@ Express API (server.js, :3000)
     ├── POST /api/chat             — Streaming chat + tool loop (optional agentId)
     ├── POST /api/compact          — LLM-based context compaction (optional agentId)
     ├── GET  /api/context-info     — Model context window size
+    ├── GET  /api/health           — Server + LLM status (for frontend polling)
     ├── GET  /api/archetypes       — List archetypes
     ├── GET  /api/agents           — List agent instances
     ├── POST /api/agents           — Create agent instance
@@ -94,7 +151,8 @@ Express API (server.js, :3000)
     ├── POST /api/agents/:id/run-briefing — Manual news briefing trigger
     ├── GET  /api/documents        — List indexed KB documents
     ├── POST /api/documents/upload — Upload + index a document
-    └── DELETE /api/documents/:id  — Delete document + chunks
+    ├── DELETE /api/documents/:id  — Delete document + chunks
+    └── GET  /download/:platform   — Electron installer download page
 
 Tool Layer (tools/)
     ├── File ops:      readFile, writeFile, deleteFile
@@ -313,5 +371,6 @@ archetypes/           Agent archetype JSON templates
 agent-instances/      Persisted agent conversations (gitignored)
 evals/                Eval suite JSON files
 creds/                Google service account credentials (gitignored)
+electron/             Electron main process, preload script, build config
 client/               React + Vite frontend
 ```

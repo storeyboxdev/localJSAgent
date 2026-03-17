@@ -148,7 +148,7 @@ async function runBriefing(agentId, { model, mcpClient, getAgentFn, saveAgentMes
   console.log(`[newsMonitor] briefing saved for "${instance.name}" (${briefingText.length} chars)`);
 
   for (const handler of handlers) {
-    try { handler({ agentId, agentName: instance.name, agentIcon: instance.icon ?? "📰", summary: `${topic} briefing ready` }); }
+    try { handler({ agentId, agentName: instance.name, agentIcon: instance.icon ?? "📰", summary: `${instance.name} briefing ready` }); }
     catch (e) { console.error("[newsMonitor] handler error:", e); }
   }
 }
